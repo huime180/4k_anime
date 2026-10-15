@@ -99,9 +99,27 @@ jobs:
   deploy:
     needs: sync
     runs-on: ubuntu-latest
+    # Pages 的部署 API 是串行的：上一次还没跑完就发起新的会报
+    #   "Deployment request failed ... due to in progress deployment"
+    # 这里给部署单独一个并发组，保证同一时刻只有一个部署在跑。
+    concurrency:
+      group: pages-deploy
+      cancel-in-progress: false
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url || steps.deployment2.outputs.page_url }}
     steps:
       - id: deployment
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+
+      # 失败就等一会儿重试一次（那个报错是纯排队冲突，重试基本都能过）。
+      # 注意：这一步失败**不影响 App**：配置 / jar / 数据都在仓库里，App 取的是 raw，
+      # Pages 只是给人看的索引页。
+      - name: Pages 部署重试（排队冲突时等 60 秒再来一次）
+        if: steps.deployment.outcome == 'failure'
+        run: sleep 60
+
+      - id: deployment2
+        if: steps.deployment.outcome == 'failure'
         uses: actions/deploy-pages@v4
