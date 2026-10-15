@@ -34,7 +34,7 @@ import urllib.request
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "config", "4k_anime_with_fty_cms.json")          # 旧：type 1，走本机解析服务
 OUT_SPIDER = os.path.join(ROOT, "config", "4k_anime_with_fty.json")        # 配置 A：解析用饭太硬 jar 自带的夸克实现
-OUT_OWN = os.path.join(ROOT, "config", "4k_anime_own.json")                # 配置 B：解析用我们自己那套
+OUT_OWN = os.path.join(ROOT, "config", "4k_anime_own.json")                # （旧）配置 B：自带解析，已停用
 
 # 数据源站点（只放 anime.json/meta.json/cover，不含任何解析）：默认 GitHub Pages，
 # 换 Cloudflare Pages 时把它设成 https://<项目>.pages.dev 即可（Action 里来自 vars.DATA_BASE）
@@ -97,7 +97,7 @@ def official_jar() -> str:
     except (OSError, ValueError):
         pass
     return gh_wrap("https://raw.githubusercontent.com/youhunwl/TVBox/master/jar/饭太硬.jar")
-OUT_MIN = os.path.join(ROOT, "config", "4k_anime_min.json")   # 最小诊断配置
+OUT_MIN = os.path.join(ROOT, "config", "4k_anime_min.json")   # （旧）最小诊断配置，已停用
 
 # 玩偶哥哥式静态数据站的地址（public/tvfan/）：WoGG.playerContent 会校验
 # siteUrl 里必须含 "wogg" 或 "tvfan"，所以路径里保留了 tvfan
@@ -362,7 +362,8 @@ def main() -> int:
     before = len(cfg.get("sites") or [])
 
     outs = []
-    for kind, path in (("cms", args.out), ("spider", args.out_spider), ("own", args.out_own)):
+    # 只维护两份：spider = 配置 A（csp_Anime4KGuard，推荐）；cms = 旧方案（type 1，需要本机服务）
+    for kind, path in (("cms", args.out), ("spider", args.out_spider)):
         cfg_v = copy.deepcopy(cfg)
         merge(cfg_v, args.host, kind)
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -370,20 +371,6 @@ def main() -> int:
             json.dump(cfg_v, fh, ensure_ascii=False, indent=1)
         outs.append((kind, path, cfg_v))
 
-    # 最小诊断配置：只有一个站点，且用「只含我们两个类」的小 jar（不含饭太硬 loader/guard）。
-    # 用它来判断「线路识别不到」是出在哪一环：
-    #   能识别 -> 我们的类和 App 加载都没问题，问题在合并 jar / 大配置；
-    #   识别不到 -> 先查配置地址本身（json、网络），再看 App 版本。
-    min_cfg = {
-        "spider": jar_spec(ONLY_JAR, "4k_anime_only.jar"),
-        "_说明": ("最小诊断配置：只有一个 4k动漫 站点，用 jar/4k_anime_only.jar"
-                  "（不含饭太硬 loader/guard）。由 src/fetch_fty.py 生成。"),
-        "sites": [build_line(args.host, "own")],
-    }
-    os.makedirs(os.path.dirname(args.out_min), exist_ok=True)
-    with open(args.out_min, "w", encoding="utf-8") as fh:
-        json.dump(min_cfg, fh, ensure_ascii=False, indent=1)
-    print("[fty] min    api=%s -> %s" % (min_cfg["sites"][0]["api"], args.out_min))
     print("[fty] 来源: %s" % src)
     print("[fty] 站点 %d -> %d，前五个: %s"
           % (before, len(outs[0][2]["sites"]), [s.get("key") for s in outs[0][2]["sites"][:5]]))

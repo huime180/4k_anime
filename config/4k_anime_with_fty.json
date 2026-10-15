@@ -705,5 +705,5 @@
  ],
  "_说明": "饭太硬官方配置（自动解析） + 4k_anime 线路（插在「我的云盘」之后，自带 jar 字段）",
  "_4k动漫": "数据站 https://huime180.github.io/4k_anime/tvfan/（纯静态，公开/tvfan/，站点里没有任何解析）；线路直接用官方 csp_WoGGGuard 抓它，spider 保持官方 jar 不动，条目也不需要自带 jar。夸克登录见「我的云盘」。本文件由 src/fetch_fty.py 自动生成。",
- "_generated_at": "2026-10-15 16:51:53 UTC"
+ "_generated_at": "2026-10-15 16:55:44 UTC"
 }

@@ -24,22 +24,25 @@
 
 ---
 
-## 一、两份配置地址（选一个导入影视仓）
+## 一、配置地址（导入影视仓）
 
-| | 线路 | 解析在哪 | 会话（夸克 Cookie）从哪来 |
-| --- | --- | --- | --- |
-| **A** | `csp_Anime4KGuard` | jar 里**饭太硬自己的**夸克实现（和玩偶哥哥同一条路） | ① 在「🗂我的云盘┃配置」里扫码登录；② 或给 `ext.session` 一个返回 `{"quarkCookie": …}` 的地址 |
-| **B** | `csp_Quark4K` | **我们自己**的夸克客户端（转存到自己网盘后取流） | ① `ext.cookie` 手填；② 反射读饭太硬那套的登录态（扫码后即有，零配置）；③ 本机 `server.py` 的 `/api/session` 兜底 |
+只维护一份：**配置 A**，线路 `csp_Anime4KGuard`（我们自己的 Guard 类，放在合并 jar 里）。
 
 ```
-A: https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/config/4k_anime_with_fty.json
-B: https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/config/4k_anime_own.json
+https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/config/4k_anime_with_fty.json
 ```
-（换 jar 版本后导入要带 `?t=<时间戳>` 穿透缓存。旧方案 `config/4k_anime_with_fty_cms.json`
-是 type 1 苹果CMS、需要本机 `server.py`，保留兼容。）
+（换 jar 版本后导入要带 `?t=<时间戳>` 穿透缓存。）
 
-两份配置都是「饭太硬官方配置 + 我们的这条线」，插在「🗂我的云盘┃配置」之后；
-`ext.data` 指向数据站，`ext.data2` 是 GitHub raw 兜底（可由 `DATA_BASE` 仓库变量切换）。
+| 项 | 说明 |
+| --- | --- |
+| 目录数据 | `ext.data` → 数据站的 `anime.json`（`ext.data2` 是 GitHub raw 兜底） |
+| 分类 | 我们自己的 20 个（全部 / 每周更新 / TV动画合集 / 其余群友资源合集 / 季度档…），来自 `anime.json` |
+| 详情 / 播放 | 转发给 jar 里饭太硬原生的夸克解析 `Cloud_quark`（经 `Init.loader()` 的子 DexClassLoader），线路名就是它的 **夸父原 / 夸父智**，播放地址是 app 本地代理形态 `http://127.0.0.1:<端口>/proxy/play/…` |
+| 夸克会话 | 由饭太硬那套负责：在「🗂我的云盘┃配置」里扫码登录一次即可 |
+
+> 仓库里还留着一份**旧方案** `config/4k_anime_with_fty_cms.json`（type 1 苹果CMS，需要本机 `src/server.py`），
+> 以及 `csp_Quark4K`（自带转存+取流的那套实现，代码仍在 jar 里）。
+> 需要时把 `src/fetch_fty.py` 里 `own` 那一档重新加进输出即可，目前不生成、不维护。
 
 ## 二、数据站（只放数据，不含解析）
 
