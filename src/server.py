@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import ipaddress
 import json
 import shutil
 import os
@@ -428,6 +429,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(self.app.meta)
             if path == "/api/session":
                 return self.session_info(query)
+            if path in ("/Cloud-drive.txt", "/cloud-drive.json",
+                        "/tvfan/Cloud-drive.txt", "/file/tvfan/Cloud-drive.txt"):
+                return self.cloud_drive(query)
             if path == "/health":
                 return self.send_json({
                     "ok": True,
@@ -535,6 +539,36 @@ class Handler(BaseHTTPRequestHandler):
             "len": len(ck),
             "puus": "__puus" in ck,
             "hint": "把这个 cookie 交给 csp_Anime4KGuard（或让 jar 自己扫码登录）" if ck else "服务端未登录，请先扫码",
+        })
+
+    def client_is_lan(self):
+        """请求方是不是内网（夸克 Cookie 只在局域网内给，避免公网被读走）"""
+        host = self.client_address[0].split("%")[0]
+        if host.startswith("::ffff:"):       # IPv4-mapped IPv6
+            host = host[7:]
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        return ip.is_loopback or ip.is_private or ip.is_link_local
+
+    def cloud_drive(self, query):
+        """饭太硬那套「Cloud-drive 网盘配置」的等价物。
+
+        配置里写 ext: {"Cloud-drive": "<base>/Cloud-drive.txt"}，jar 里的
+        Cloud_quark.init 会 HTTP 拉这个地址、取里面的 quarkCookie 当会话 ——
+        于是饭太硬自己的夸克实现（夸父原/夸父智）就带着 __puus 了，不用再手填。
+        真正的 `tvfan/Cloud-drive.txt` 是饭太硬自家 app 本地文件服务里的路径，
+        我们这边只能用 http 形态，内容格式保持一致（{"quarkCookie": "..."}）。
+        """
+        want = os.environ.get("ADMIN_TOKEN", "")
+        if not (self.client_is_lan() or (want and query.get("key") == want)):
+            return self.send_json({"error": "Cloud-drive 只对内网开放"}, 403)
+        ck = self.app.quark.session_cookie() if self.app.quark.cookie else ""
+        return self.send_json({
+            "quarkCookie": ck,
+            "hint": "饭太硬 Cloud-drive 格式；由 4k_anime 的 server.py 动态生成",
+            "len": len(ck),
         })
 
     # ---------------- 我的云盘（纯接口，可在影视仓内完成） ---------------- #

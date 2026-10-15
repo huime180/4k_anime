@@ -171,7 +171,9 @@ def build_line(host: str, kind: str = "cms") -> dict:
             "searchable": 1,
             "quickSearch": 1,
             "changeable": 0,
-            "ext": {"Cloud-drive": "tvfan/Cloud-drive.txt"},
+            # 饭太硬云盘配置字段：jar 会 HTTP 拉这个地址取 quarkCookie（内含 __puus），
+            # 于是它自己那套夸克解析直接可用；离网/关了服务时它拿不到，就回退到 jar 自带扫码登录。
+            "ext": {"Cloud-drive": host + "/Cloud-drive.txt"},
         }
     return {
         "key": "4k_anime",

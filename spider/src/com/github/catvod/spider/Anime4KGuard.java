@@ -46,6 +46,7 @@ public class Anime4KGuard extends Spider {
     private String extRaw = "";          // ext 原文，原样透传
     private Spider realQuark = null;     // 饭太硬 jar 里的 Cloud_quark 实例（可能为 null）
     private boolean realTried = false;
+    private String realReason = "未尝试";   // 饭太硬原生那条路失败的原因（写进详情，方便排查）
     private String cookie = "";
     private String dataUrl = "";
     private String serverUrl = "";
@@ -192,11 +193,14 @@ public class Anime4KGuard extends Spider {
     public String homeContent(boolean filter) {
         try {
             J d = data();
+            // 注意：这里要把 anime.json 里的分类**全部**给出去（A 版 CMS 也是全给 19 个），
+            // 只给 type_pid=0 的顶层分类会让 app 里少一大截分类。
             StringBuilder sb = new StringBuilder("{\"class\":[{\"type_id\":\"4k_all\",\"type_name\":\"全部\"}");
             for (J c : d.arr("classes")) {
-                if (!"0".equals(c.str("type_pid")) && c.get("type_pid") != null) continue;
                 sb.append(",{\"type_id\":").append(J.q(c.str("type_id")))
-                  .append(",\"type_name\":").append(J.q(c.str("type_name"))).append("}");
+                  .append(",\"type_name\":").append(J.q(c.str("type_name")))
+                  .append(",\"type_pid\":").append(J.q(c.str("type_pid").isEmpty() ? "0" : c.str("type_pid")))
+                  .append("}");
             }
             // 首页也要给出条目，否则客户端看起来「4k动漫为空」
             List<J> all = d.arr("items");
@@ -284,18 +288,6 @@ public class Anime4KGuard extends Spider {
             String pwd = item.str("pwd_id");
             if (pwd.isEmpty()) return fail("该条目不是夸克分享（网盘：" + item.str("drive_name") + "）");
 
-            // 先把剧集交给饭太硬自己的夸克解析（和玩偶哥哥同一条路），成功就用它的播放列表
-            String[] theirs = realDetail(pwd);
-            if (theirs != null) {
-                return "{\"list\":[{\"vod_id\":\"4k:" + Json.esc(id) + "\""
-                        + ",\"vod_name\":" + J.q(item.str("name"))
-                        + ",\"vod_pic\":" + J.q(item.str("vod_pic"))
-                        + ",\"vod_content\":" + J.q("画质 " + item.str("resolution")
-                            + " ｜ 修复 " + item.str("model") + " ｜ 解析：饭太硬原生（" + theirs[0] + "）")
-                        + ",\"vod_play_from\":" + J.q(theirs[0])
-                        + ",\"vod_play_url\":" + J.q(theirs[1])
-                        + "}]}";
-            }
             String stoken = stoken(pwd);
             List<J> root = listDir(pwd, stoken, "0");
             String startFid = "0";
@@ -312,15 +304,38 @@ public class Anime4KGuard extends Spider {
                 raw.append(label).append("$").append(base).append(":r");
                 smart.append(label).append("$").append(base).append(":s");
             }
-            // 两档：原画＝源文件直链（全分辨率）；智能＝夸克转码流（HLS，最省事能播）
-            // —— 对齐玩偶哥哥的「夸父原 / 夸父智」，档位名用配置里的 原画 / 智能
-            String playUrl = eps.isEmpty() ? "" : raw + "$$$" + smart;
+            // 自带两档：原画＝源文件直链（全分辨率）；智能＝夸克转码流（HLS，最省事能播）
+            String mineFrom = "", mineUrl = "";
+            if (!eps.isEmpty()) {
+                mineFrom = "原画$$$智能";
+                mineUrl = raw + "$$$" + smart;
+            }
+            // 饭太硬原生那条（和玩偶哥哥同一条路）：夸父原/夸父智
+            String[] theirs = realDetail(pwd);
+            String from = theirs != null ? theirs[0] : "";
+            String url = theirs != null ? theirs[1] : "";
+            String src;
+            if (!from.isEmpty() && !mineFrom.isEmpty()) {
+                from = from + "$$$" + mineFrom;      // 两套都给：原生优先，自带兜底
+                url = url + "$$$" + mineUrl;
+                src = "饭太硬原生 + 自带";
+            } else if (!from.isEmpty()) {
+                src = "饭太硬原生";
+            } else if (!mineFrom.isEmpty()) {
+                from = mineFrom;
+                url = mineUrl;
+                src = "自带（饭太硬原生不可用：" + realReason + "）";
+            } else {
+                return fail("没有找到可播放的文件（" + realReason + "）");
+            }
             return "{\"list\":[{\"vod_id\":\"4k:" + Json.esc(id) + "\""
                     + ",\"vod_name\":" + J.q(item.str("name"))
                     + ",\"vod_pic\":" + J.q(item.str("vod_pic"))
                     + ",\"vod_content\":" + J.q("画质 " + item.str("resolution")
-                        + " ｜ 修复 " + item.str("model") + " ｜ 共 " + eps.size() + " 集")
-                    + ",\"vod_play_from\":\"原画$$$智能\",\"vod_play_url\":" + J.q(playUrl)
+                        + " ｜ 修复 " + item.str("model") + " ｜ 共 " + eps.size() + " 集"
+                        + " ｜ 解析：" + src)
+                    + ",\"vod_play_from\":" + J.q(from)
+                    + ",\"vod_play_url\":" + J.q(url)
                     + "}]}";
         } catch (Throwable t) {
             return fail("详情解析失败：" + t.getMessage());
@@ -384,7 +399,7 @@ public class Anime4KGuard extends Spider {
         realTried = true;
         try {
             ClassLoader cl = Init.loader();
-            if (cl == null) return null;
+            if (cl == null) { realReason = "Init.loader() 返回空"; return null; }
             Class<?> c = cl.loadClass("com.github.catvod.spider.Cloud_quark");
             Spider s = (Spider) c.newInstance();
             // ext 原样透传：Cloud-drive / 网盘登录后的会话都由它自己维护
@@ -392,24 +407,38 @@ public class Anime4KGuard extends Spider {
             realQuark = s;
         } catch (Throwable t) {
             realQuark = null;
+            realReason = "加载 Cloud_quark 失败：" + t;
         }
         return realQuark;
     }
 
-    /** 用饭太硬的实现解析这个分享，返回 {vod_play_from, vod_play_url}；失败返回 null */
+    /** 用饭太硬的实现解析这个分享，返回 {vod_play_from, vod_play_url}；失败返回 null 并把原因记进 realReason */
     private String[] realDetail(String pwd) {
         try {
             Spider rq = real();
-            if (rq == null) return null;
+            if (rq == null) {
+                realReason = "拿不到 Cloud_quark（Init.loader() 为空或类加载失败）";
+                return null;
+            }
             String json = rq.detailContent(java.util.Arrays.asList("https://pan.quark.cn/s/" + pwd));
-            if (json == null || json.length() < 20) return null;
+            if (json == null || json.length() < 20) {
+                realReason = "它的详情返回空（多为未扫码登录）";
+                return null;
+            }
             List<J> list = J.parse(json).arr("list");
-            if (list.isEmpty()) return null;
+            if (list.isEmpty()) {
+                realReason = "它的详情没有 list";
+                return null;
+            }
             String from = list.get(0).str("vod_play_from");
             String url = list.get(0).str("vod_play_url");
-            if (from.isEmpty() || url.isEmpty()) return null;
+            if (from.isEmpty() || url.isEmpty()) {
+                realReason = "它的详情没有播放列表（多为未扫码登录）";
+                return null;
+            }
             return new String[]{from, url};
         } catch (Throwable t) {
+            realReason = "调用它的详情抛异常：" + t;
             return null;
         }
     }
