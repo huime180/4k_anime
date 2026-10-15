@@ -193,6 +193,27 @@ class App:
 # --------------------------------------------------------------------------- #
 # HTTP
 # --------------------------------------------------------------------------- #
+PAGE_TEMPLATE = r"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>4K动漫 · 夸克接口</title><style>
+body{margin:0;background:#12131a;color:#e8e8ef;font:14px/1.5 system-ui,sans-serif}
+header{padding:18px 20px;background:#1b1d29;border-bottom:1px solid #2b2e3d;position:sticky;top:0}
+h1{margin:0 0 6px;font-size:18px}.sub{color:#8b90a8;font-size:12px}
+nav{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+nav a{color:#9fd0ff;text-decoration:none;background:#232636;padding:3px 9px;border-radius:99px;font-size:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:14px;padding:18px 20px}
+.c{background:#1b1d29;border-radius:10px;overflow:hidden}
+.c img{width:100%;aspect-ratio:2/3;object-fit:cover;display:block;background:#232636}
+.t{padding:7px 8px 2px;font-size:12.5px;line-height:1.35;height:36px;overflow:hidden}
+.m{padding:0 8px 8px;color:#8b90a8;font-size:11px}
+code{background:#232636;padding:2px 6px;border-radius:5px}
+</style></head><body>
+<header><h1>🎬 4K动漫 · 夸克接口</h1>
+<div class="sub">共 <b>{{TOTAL}}</b> 条 ｜ 数据源：在线表格自动同步 ｜ 配置地址 <code>{{BASE}}/4k_anime.json</code>
+｜ 夸克 Cookie：{{COOKIE}}</div><nav>{{NAV}}</nav></header>
+<div class="grid">{{CARDS}}</div></body></html>"""
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "4k-anime/1.0"
     protocol_version = "HTTP/1.1"
@@ -320,29 +341,16 @@ class Handler(BaseHTTPRequestHandler):
                 '<div class="m">%s · %s</div></div>'
                 % (_esc(pic), _esc(it["name"]), _esc(it.get("resolution", "")),
                    _esc(it.get("drive_name", ""))))
-        nav = "".join('<a href="#%s">%s (%d)</a>' % (_esc(c["name"]), _esc(c["name"]), c["count"])
-                      for c in cats)
-        html = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>4K动漫 · 夸克接口</title><style>
-body{margin:0;background:#12131a;color:#e8e8ef;font:14px/1.5 system-ui,sans-serif}
-header{padding:18px 20px;background:#1b1d29;border-bottom:1px solid #2b2e3d;position:sticky;top:0}
-h1{margin:0 0 6px;font-size:18px}.sub{color:#8b90a8;font-size:12px}
-nav{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
-nav a{color:#9fd0ff;text-decoration:none;background:#232636;padding:3px 9px;border-radius:99px;font-size:12px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:14px;padding:18px 20px}
-.c{background:#1b1d29;border-radius:10px;overflow:hidden}
-.c img{width:100%;aspect-ratio:2/3;object-fit:cover;display:block;background:#232636}
-.t{padding:7px 8px 2px;font-size:12.5px;line-height:1.35;height:36px;overflow:hidden}
-.m{padding:0 8px 8px;color:#8b90a8;font-size:11px}
-code{background:#232636;padding:2px 6px;border-radius:5px}
-</style></head><body>
-<header><h1>🎬 4K动漫 · 夸克接口</h1>
-<div class="sub">共 <b>%d</b> 条 ｜ 数据源：在线表格自动同步 ｜ 配置地址 <code>%s/4k_anime.json</code>
-｜ 夸克 Cookie：%s</div><nav>%s</nav></header>
-<div class="grid">%s</div></body></html>""" % (
-            len(items), _esc(base), "已配置" if self.app.quark.cookie else "未配置（只能浏览，不能取流）",
-            nav, "".join(cards))
+        nav = "".join('<a href="#%s">%s (%d)</a>'
+                      % (_esc(c["name"]), _esc(c["name"]), c["count"]) for c in cats)
+        # 用占位符替换而不是 % 格式化：模板里的 CSS 含 100%，会撞上格式符
+        html = (PAGE_TEMPLATE
+                .replace("{{TOTAL}}", str(len(items)))
+                .replace("{{BASE}}", _esc(base))
+                .replace("{{COOKIE}}", "已配置" if self.app.quark.cookie
+                         else "未配置（只能浏览，不能取流）")
+                .replace("{{NAV}}", nav)
+                .replace("{{CARDS}}", "".join(cards)))
         self.send_bytes(html.encode("utf-8"), "text/html; charset=utf-8")
 
     def cover(self, filename):
