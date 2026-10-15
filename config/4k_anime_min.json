@@ -8,7 +8,6 @@
    "type": 3,
    "api": "csp_Quark4K",
    "timeout": 30,
-   "jar": "https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/jar/4k_anime_only.jar;md5;c10433237f4252b659ec41c3e1c3c313",
    "searchable": 1,
    "quickSearch": 1,
    "changeable": 0,

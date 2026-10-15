@@ -235,11 +235,10 @@ def build_line(host: str, kind: str = "cms") -> dict:
         # 想免扫码的话，把 "session" 填成返回 {"quarkCookie": ...} 的地址即可。
         return {
             "key": "4k_anime",
-            "name": "🎬4K动漫┃夸克",
+            "name": "🎬4K动漫A┃夸克解析",
             "type": 3,
             "api": "csp_Anime4KGuard",
             "timeout": 30,
-            "jar": jar_spec(MERGED_JAR, "4k_anime_fty_merged.jar"),   # 只给这一条线用（带 md5，jar 一变就会重下）
             "searchable": 1,
             "quickSearch": 1,
             "changeable": 0,
@@ -256,17 +255,17 @@ def build_line(host: str, kind: str = "cms") -> dict:
         # 取流/登录依旧由 jar 里的网盘引擎负责。
         return {
             "key": "4k_anime",
-            "name": "🎬4K动漫A┃官方玩偶解析",
+            "name": "🎬4K动漫A┃夸克解析",
             "type": 3,
-            "api": "csp_WoGGGuard",
+            "api": "csp_Anime4KGuard",
             "timeout": 30,
             "searchable": 1,
             "quickSearch": 1,
             "changeable": 0,
             "ext": {
-                "siteUrl": SITE_URL,
-                "from": "4k|auto",
                 "Cloud-drive": "tvfan/Cloud-drive.txt",
+                "data": DATA_BASE + "/anime.json",
+                "data2": gh_wrap(DATA_RAW_RAW),
             },
         }
     if kind == "own":
@@ -279,7 +278,6 @@ def build_line(host: str, kind: str = "cms") -> dict:
             "type": 3,
             "api": "csp_Quark4K",
             "timeout": 30,
-            "jar": jar_spec(ONLY_JAR, "4k_anime_only.jar"),           # 自带解析不依赖 loader/guard
             "searchable": 1,
             "quickSearch": 1,
             "changeable": 0,
@@ -311,10 +309,17 @@ def merge(cfg: dict, host: str, kind: str = "cms") -> dict:
             break
     sites.insert(at, build_line(host, kind))
     cfg["sites"] = sites
-    # `spider` 一律保持**官方 jar**：官方 46 条 csp_*Guard 全依赖它，换了它一旦加载失败
-    # 所有官方线路会一起消失（用户遇到的「线路都识别不到」）。我们那条线用自己的 jar，
-    # 写在站点自己的 "jar" 字段里（TVBox/影视仓 的站点级 jar）。
-    cfg["spider"] = official_jar()
+    # `spider` 用**我们的合并 jar**：它就是「官方 jar（loader dex + assets/.so + 加密 guard）
+    # + 我们两个类」重建出来的，所以
+    #   - 官方那些 csp_*Guard 线路照旧能用（内容就是官方那份，只是多了我们两个类）；
+    #   - 我们那条线（csp_Anime4KGuard / csp_Quark4K）的类也在同一个 jar 里，
+    #     不需要站点级 jar（那个影视仓认不认还是未知数）。
+    # 注意：这个 jar 的地址必须是 github 系地址才能套 gh-proxy（第三方 CDN 套了会拉不到，
+    # 那次的代价就是「所有站点分类全没」）。
+    if kind in ("spider", "own"):
+        cfg["spider"] = jar_spec(MERGED_JAR, "4k_anime_fty_merged.jar")
+    elif kind == "wogg":
+        cfg["spider"] = official_jar()      # 官方 WoGG 线路才用官方 jar
     if kind in ("spider", "own", "wogg"):
         cfg["_说明"] = ("饭太硬官方配置（自动解析） + 4k_anime 线路"
                         "（插在「我的云盘」之后，自带 jar 字段）")
@@ -357,7 +362,7 @@ def main() -> int:
     before = len(cfg.get("sites") or [])
 
     outs = []
-    for kind, path in (("cms", args.out), ("wogg", args.out_spider), ("own", args.out_own)):
+    for kind, path in (("cms", args.out), ("spider", args.out_spider), ("own", args.out_own)):
         cfg_v = copy.deepcopy(cfg)
         merge(cfg_v, args.host, kind)
         os.makedirs(os.path.dirname(path), exist_ok=True)
