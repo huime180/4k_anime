@@ -307,7 +307,9 @@ public class Anime4KGuard extends Spider {
             // 自带两档：原画＝源文件直链（全分辨率）；智能＝夸克转码流（HLS，最省事能播）
             String mineFrom = "", mineUrl = "";
             if (!eps.isEmpty()) {
-                mineFrom = "原画$$$智能";
+                // 标成「直链」：这两条是我们自己解析出来的 CDN 直链（要播放器带 header），
+                // 和饭太硬那两条走 app 本地代理（/proxy/play/...）的形态不同，别混。
+                mineFrom = "原画(直链)$$$智能(直链)";
                 mineUrl = raw + "$$$" + smart;
             }
             // 饭太硬原生那条（和玩偶哥哥同一条路）：夸父原/夸父智
@@ -405,8 +407,17 @@ public class Anime4KGuard extends Spider {
             if (cl == null) { realReason = "Init.loader() 返回空"; return null; }
             Class<?> c = cl.loadClass("com.github.catvod.spider.Cloud_quark");
             Spider s = (Spider) c.newInstance();
-            // ext 原样透传：Cloud-drive / 网盘登录后的会话都由它自己维护
-            s.init(appContext, extRaw.isEmpty() ? "{}" : extRaw);
+            // 注意：Cloud-drive 是**全线路共用**的键（Pan.init 会把同一个 ext 喂给 4 个网盘
+            // 后端，拿到含 pus 的 cookie 就写进共用的 N0 单例）。所以配置里保持饭太硬官方
+            // 的占位写法，我们在这里**只在本次调用内**补一个可用的 http 形态：
+            // 只有当配置里的 ext 没有带 http 地址时才补，且服务端会先校验 cookie 有效性，
+            // 无效就返回不带 quarkCookie 的响应 -> jar 连 s0() 都不会调 -> 别人的会话不受影响。
+            String jarExt = extRaw;
+            if (jarExt == null || jarExt.trim().isEmpty() || !jarExt.contains("http")) {
+                jarExt = "{\"Cloud-drive\":" + J.q(serverUrl.isEmpty() ? SERVER_DATA + "/Cloud-drive.txt"
+                        : serverUrl.replaceAll("/+$", "") + "/Cloud-drive.txt") + "}";
+            }
+            s.init(appContext, jarExt);
             realQuark = s;
         } catch (Throwable t) {
             realQuark = null;

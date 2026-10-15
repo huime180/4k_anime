@@ -111,6 +111,7 @@ class App:
         self._cover_cache = {}
         self.qr_sessions = {}        # token -> {rid, created}
         self.qr_workers = {}         # token -> Thread
+        self._ck_ok_at, self._ck_ok = 0.0, False   # /Cloud-drive.txt 用：cookie 有效性缓存
         self._by_type_top = {}
         self._by_type = {}
         self._by_id = {}
@@ -151,6 +152,27 @@ class App:
 
     def account_info(self):
         return self.quark.account_info()
+
+    def cookie_valid(self, ttl=300):
+        """Cookie 现在真的还能用吗（带缓存，别每次请求都去探测）。
+
+        /Cloud-drive.txt 只在**验证通过**时才吐 quarkCookie：因为 jar 里
+        N0.Zm().s0() 的规则是「cookie 含 pus 就写进共用单例」——
+        如果把一个过期/失效的 cookie 递进去，jar 会以为已登录，
+        玩偶哥哥等线路就会从「提示扫码」变成「莫名鉴权失败」。
+        所以失效时返回不带 quarkCookie 的响应，jar 那边直接 no-op。
+        """
+        now = time.time()
+        if now - self._ck_ok_at < ttl:
+            return self._ck_ok
+        ok = False
+        if self.quark.cookie:
+            try:
+                ok = bool(self.quark.account_info())
+            except Exception:  # noqa: BLE001
+                ok = False
+        self._ck_ok_at, self._ck_ok = now, ok
+        return ok
 
     def clear_cookie(self):
         """清除已保存的夸克 Cookie，并立即生效"""
@@ -564,10 +586,17 @@ class Handler(BaseHTTPRequestHandler):
         want = os.environ.get("ADMIN_TOKEN", "")
         if not (self.client_is_lan() or (want and query.get("key") == want)):
             return self.send_json({"error": "Cloud-drive 只对内网开放"}, 403)
+        if query.get("force") != "1" and not self.app.cookie_valid():
+            # 故意不带 quarkCookie 这个键：jar 拉到后不会调 s0()，别人已有的会话保持原样
+            return self.send_json(
+                {"error": "服务端当前的夸克会话不可用（未登录或已过期）",
+                 "hint": "先在「我的云盘」里扫码登录，或让 server.py 侧换一个有效 cookie"}, 403)
         ck = self.app.quark.session_cookie() if self.app.quark.cookie else ""
+        if not ck:
+            return self.send_json({"error": "服务端未登录"}, 403)
         return self.send_json({
             "quarkCookie": ck,
-            "hint": "饭太硬 Cloud-drive 格式；由 4k_anime 的 server.py 动态生成",
+            "hint": "饭太硬 Cloud-drive 格式；由 4k_anime 的 server.py 动态生成（已校验有效）",
             "len": len(ck),
         })
 

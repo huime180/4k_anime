@@ -171,9 +171,11 @@ def build_line(host: str, kind: str = "cms") -> dict:
             "searchable": 1,
             "quickSearch": 1,
             "changeable": 0,
-            # 饭太硬云盘配置字段：jar 会 HTTP 拉这个地址取 quarkCookie（内含 __puus），
-            # 于是它自己那套夸克解析直接可用；离网/关了服务时它拿不到，就回退到 jar 自带扫码登录。
-            "ext": {"Cloud-drive": host + "/Cloud-drive.txt"},
+            # 这个键是**全线路共用**的（Pan.init 会把同一个 ext 喂给 4 个网盘后端，
+            # 谁拿到含 pus 的 cookie 就会写进共用的 N0 单例）。所以配置里保持饭太硬官方
+            # 原样的占位写法，绝不在这里塞我们自己的地址 —— 我们那条线要用会话，
+            # 由 Anime4KGuard 内部自己补（只影响自己，详见类注释）。
+            "ext": {"Cloud-drive": "tvfan/Cloud-drive.txt"},
         }
     return {
         "key": "4k_anime",
