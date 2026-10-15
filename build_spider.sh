@@ -40,7 +40,7 @@ if [ -n "$ONLY" ]; then
   cp dex/classes.dex pack/
   mkdir -p pack/META-INF
   printf 'Manifest-Version: 1.0\n\n' > pack/META-INF/MANIFEST.MF
-  ( cd pack && "$JDK/bin/jar" cf "$ROOT/jar/4k_anime_only.jar" classes.dex META-INF )
+  python3 "$ROOT/src/pack_jar.py" pack "$ROOT/jar/4k_anime_only.jar" classes.dex META-INF/MANIFEST.MF
   echo "✅ 产出 jar/4k_anime_only.jar（只含我们的类 + Init 桩）"
   exit 0
 fi
@@ -54,5 +54,6 @@ cp dex/classes.dex pack/
 cp "$FTY"/assets/*.so "$FTY"/assets/*.guard pack/assets/
 mkdir -p pack/META-INF && cp "$FTY"/META-INF/MANIFEST.MF pack/META-INF/ 2>/dev/null || true
 mkdir -p "$ROOT/jar"
-( cd pack && "$JDK/bin/jar" cf "$ROOT/jar/4k_anime_fty_merged.jar" classes.dex assets META-INF )
+python3 "$ROOT/src/pack_jar.py" pack "$ROOT/jar/4k_anime_fty_merged.jar" \
+  classes.dex META-INF/MANIFEST.MF $(cd pack && ls assets/*.so assets/*.guard | sed 's|^|&|')
 echo "✅ 产出 jar/4k_anime_fty_merged.jar"
