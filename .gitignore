@@ -24,3 +24,6 @@ work/merge/
 qs.txt
 srv.log
 spider/verify/
+spider/merged/
+spider/pack/
+spider/renamed/

@@ -31,12 +31,15 @@
    "key": "4k_anime",
    "name": "🎬4K动漫┃夸克",
    "type": 3,
-   "api": "csp_WoGGGuard",
-   "searchable": 1, "quickSearch": 1, "changeable": 0,
+   "api": "csp_4KAnimeGuard",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 0,
    "ext": {
-     "Cloud-drive": "tvfan/Cloud-drive.txt",
-     "siteUrl": "https://huime180.github.io/4k_anime/site/",
-     "danMu": "弹"
+    "Cloud-drive": "tvfan/Cloud-drive.txt",
+    "from": "4k|auto",
+    "data": "https://huime180.github.io/4k_anime/anime.json",
+    "danMu": "弹"
    }
   },
   {
