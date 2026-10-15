@@ -1,5 +1,5 @@
 {
- "spider": "https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/jar/4k_anime_fty_merged.jar;md5;66b9f0cbb021256be6b314fd4404493d",
+ "spider": "https://xiuxiu-pro-new.meitudata.com/posters/3c60a3e44d582b5a74fdcab19a150ad5.jpg;md5;aa8d37525617af470b3b8dfc91db8669",
  "wallpaper": "https://动态壁纸.饭.eu.org/",
  "sites": [
   {
@@ -700,5 +700,5 @@
  ],
  "_说明": "饭太硬官方配置（自动解析） + 4k_anime 线路（插在「我的云盘」之后）",
  "_4k动漫": "由 huime180/4k_anime 维护：表格定时自动同步 -> anime.json；解析取流由本项目服务提供。本文件由 src/fetch_fty.py 自动生成。",
- "_generated_at": "2026-10-15 16:47:58 UTC"
+ "_generated_at": "2026-10-15 16:51:53 UTC"
 }
