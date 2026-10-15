@@ -20,16 +20,24 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import struct
 import sys
 import time
+import urllib.request
 import zlib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(ROOT, "data")
 PUBLIC_DIR = os.path.join(ROOT, "public")
+COVER_DIR = os.path.join(PUBLIC_DIR, "cover", "bgm")      # 镜像下来的 Bangumi 封面
+
+# 封面也走 gh-proxy 加速（国内直连 bgm.tv 的图常加载不出来）
+GH = "https://gh-proxy.com/"
+RAW = "https://raw.githubusercontent.com/huime180/4k_anime/main"
+UA = "dsh-4k-anime/1.0 (https://github.com/huime180/4k_anime)"
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from names import normalize_name  # noqa: E402
@@ -83,6 +91,35 @@ def _load_json(path, default):
         return default
 
 
+def _mirror_cover(url):
+    """把 Bangumi 封面下到 public/cover/bgm/ 里，返回走 gh-proxy 的地址
+
+    国内直连 bgm.tv 的图经常加载不出来，所以**自己存一份**，
+    再套 gh-proxy（和配置/jar 用的是同一个加速，已验证可用）。
+    下载失败就退回原地址，不影响其它条目。
+    """
+    if not url:
+        return ""
+    name = hashlib.md5(url.encode("utf-8")).hexdigest()[:16] + ".jpg"
+    path = os.path.join(COVER_DIR, name)
+    if not os.path.exists(path):
+        src = (url.replace("/pic/cover/l/", "/pic/cover/c/")
+                  .replace("/pic/cover/s/", "/pic/cover/c/"))     # common 那档 ~12KB
+        try:
+            req = urllib.request.Request(src, headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                data = resp.read()
+            if data[:2] == b"\xff\xd8":                             # 真的是 JPEG
+                os.makedirs(COVER_DIR, exist_ok=True)
+                with open(path, "wb") as fh:
+                    fh.write(data)
+            else:
+                return url
+        except Exception:  # noqa: BLE001
+            return url
+    return GH + RAW + "/public/cover/bgm/" + name
+
+
 def _fill_items(anime, meta, pages):
     """把封面 + 详情写进每个 item（spider 直接读这份 JSON）"""
     hit_cover = hit_detail = 0
@@ -95,11 +132,12 @@ def _fill_items(anime, meta, pages):
         share_count[pwd] = share_count.get(pwd, 0) + 1
     for item in anime.get("items", []):
         info = meta.get(normalize_name(item.get("name", ""))) or {}
-        pic = info.get("image") or ""
+        pic = _mirror_cover(info.get("image") or "")
         if pic:
             hit_cover += 1
         else:
-            pic = "%s/cover/%s.png" % (pages, item["id"])
+            # 没有 Bangumi 封面的：用仓库里的占位图，同样套 gh-proxy
+            pic = GH + RAW + "/public/cover/%s.png" % item["id"]
         item["vod_pic"] = pic
 
         # 详情四件套 + 简介：影视仓详情页直接显示这些字段
@@ -136,6 +174,20 @@ def _placeholder_covers(anime, meta):
         with open(path, "wb") as fh:
             fh.write(cover_png(item["id"]))
         made += 1
+
+    # 清掉没人用的镜像封面
+    if os.path.isdir(COVER_DIR):
+        used = set()
+        for item in anime.get("items", []):
+            info = meta.get(normalize_name(item.get("name", ""))) or {}
+            if info.get("image"):
+                used.add(hashlib.md5(info["image"].encode("utf-8")).hexdigest()[:16] + ".jpg")
+        for name in os.listdir(COVER_DIR):
+            if name not in used:
+                try:
+                    os.remove(os.path.join(COVER_DIR, name))
+                except OSError:
+                    pass
 
     # 清掉「后来配上 Bangumi 封面」而变得多余的占位图
     for name in os.listdir(out_dir):
