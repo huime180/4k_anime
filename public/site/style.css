@@ -1,0 +1,6 @@
+body{background:#12131a;color:#e8e8ef;font:14px/1.5 system-ui,sans-serif;margin:0;padding:12px}
+a{color:#9fd0ff;text-decoration:none}
+.poster-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:14px}
+.poster-cell{background:#1b1d29;border-radius:10px;overflow:hidden}
+.poster-cell img{width:100%;aspect-ratio:2/3;object-fit:cover;display:block}
+.poster-meta{padding:6px 8px;font-size:12px;color:#8b90a8}
