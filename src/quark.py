@@ -771,6 +771,22 @@ class Quark:
             return {}
         return resp.get("data") or {}
 
+    def session_header(self):
+        """把取流必需的会话 Cookie 作为请求头返回。
+
+        实测：CDN 对直链强校验会话 Cookie（__puus），缺了一律 412。
+        但只要把 Cookie 放进请求头，**任何全新连接**都能拿到 206 ——
+        所以可以让播放器直连 CDN（而不是我们转发），吞吐不再受代理限制。
+        格式按 TVBox spider 约定：每行一个 "Key: Value"。
+        """
+        pairs = ["%s=%s" % (c.name, c.value) for c in self._jar]
+        lines = []
+        if pairs:
+            lines.append("Cookie: " + "; ".join(pairs))
+        lines.append("User-Agent: " + UA)
+        lines.append("Referer: https://pan.quark.cn/")
+        return "\n".join(lines)
+
     def open_stream(self, url, extra_headers=None):
         """带着会话 Cookie 打开取流地址。
 

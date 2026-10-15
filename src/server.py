@@ -443,6 +443,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.play(query)
             if path == "/login":
                 return self.page_login(query)
+            if path in ("/proxy", "/proxy/"):
+                return self.proxy_dispatch(query)
             if path == "/api/qr/new":
                 return self.qr_new(query)
             if path in ("/mydrive.png", "/qr.png"):
@@ -460,6 +462,60 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(exc)}, 500)
             except Exception:
                 pass
+
+    # ---------------- proxy 分派（对齐玩偶哥哥的 proxy(type=)） ---------------- #
+    def proxy_dispatch(self, query):
+        """GET /proxy?type=302|play|sub|input
+
+        对齐反编译出来的 csp_QuarkCloud.proxy() 结构：
+          302   -> 直接把 CDN 直链 302 给播放器（需播放器带 header）
+          play  -> 走本机转发（兼容不带 header 的播放器）
+          sub   -> 返回会话/状态信息（对应它的 OB(map)）
+          input -> 返回可用的取流地址清单（对应它的 o(map)）
+        """
+        base = self.base_url()
+        qtype = (query.get("type") or "play").lower()
+        pwd = query.get("pwd") or query.get("pwd_id") or ""
+        fid = query.get("fid") or ""
+        ft = query.get("ft") or ""
+        quality = (query.get("q") or "raw").lower()
+        if quality not in ("raw", "smart"):
+            quality = "raw"
+
+        if qtype == "sub":
+            return self.send_json({
+                "cookie": bool(self.app.quark.cookie),
+                "account": self.app.quark.account_info() or {},
+                "session": [c.name for c in self.app.quark._jar],
+            })
+
+        if not (pwd and fid):
+            if qtype == "input":
+                return self.send_json({"list": []})
+            return self.send_json({"error": "missing pwd/fid"}, 400)
+
+        try:
+            url = self.app.quark.direct_url(pwd, fid, ft, quality=quality,
+                                            file_name=query.get("n", ""),
+                                            file_size=int(query.get("z") or 0))
+        except QuarkAuthError as exc:
+            return self.send_json({"error": str(exc)}, 401)
+        except QuarkError as exc:
+            return self.send_json({"error": str(exc)}, 502)
+
+        if qtype == "302":
+            # 带 header 信息的 302 说明（播放器按 spider 协议带 header 即可直连）
+            self.send_response(302)
+            self.send_header("Location", url)
+            self.send_header("X-Play-Header", self.app.quark.session_header().replace("\n", " | "))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if qtype == "input":
+            return self.send_json({"list": [{"url": url,
+                                             "header": self.app.quark.session_header()}]})
+        return self._proxy(url)
 
     # ---------------- 我的云盘（纯接口，可在影视仓内完成） ---------------- #
     def _cookie_ok(self):
@@ -898,7 +954,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"parse": 0, "url": "", "error": str(exc)}, 401)
         except QuarkError as exc:
             return self.send_json({"parse": 0, "url": "", "error": str(exc)}, 502)
-        return self.send_json({"parse": 0, "url": url, "playUrl": url, "header": ""})
+        # 把会话 Cookie 作为 header 交给播放器 —— 它就能直连 CDN，
+        # 不经过我们的转发，吞吐不受限。
+        return self.send_json({"parse": 0, "url": url, "playUrl": url,
+                               "header": self.app.quark.session_header()})
 
     # ---------------- 取流 ---------------- #
     def play(self, query):
