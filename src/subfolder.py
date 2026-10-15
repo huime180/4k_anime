@@ -241,6 +241,50 @@ def pick(item, entry, folders):
     return best if best_score >= 0.85 else ("", "")
 
 
+def _near(variants, want, name):
+    """近似分（0 起，≥0.6 才算认出）
+
+    三档：
+      1) 整名/别名包含（括号、季度后缀、序号都已经在 _norm 里剥掉了）；
+      2) 共享**中文**词（≥2 个两字词）+ 词重合度 ≥0.2
+         —— 「打史莱姆300年 第二期」对上「打了300年的史莱姆，不知不觉就练到了满级」；
+         纯英文的偶合（chiramune ↔ onepunchman）不算；
+      3) 只差一两个字（difflib ≥0.7）—— 表格写错字那种。
+    季数明确对不上就不猜。
+    """
+    best = _score(variants, name, want)
+    hay = _norm(name)
+    if not hay:
+        return best
+    got = _season(name)
+    if want and got and got != want:
+        return best
+
+    def bigrams(t):
+        return set(t[i:i + 2] for i in range(len(t) - 1))
+
+    def has_cjk(t):
+        return any("\u4e00" <= c <= "\u9fff" for c in t)
+
+    hb = bigrams(hay)
+    if hb:
+        for v in variants:
+            vb = bigrams(_norm(v))
+            if not vb:
+                continue
+            shared = vb & hb
+            shared_cjk = [x for x in shared if has_cjk(x)]
+            ov = len(shared) / float(len(vb | hb))
+            if len(shared_cjk) >= 2 and ov >= 0.2:
+                best = max(best, ov * 3.2)
+            if len(v) >= 4 and abs(len(hay) - len(v)) <= 3:
+                import difflib
+                ratio = difflib.SequenceMatcher(None, v, hay).ratio()
+                if ratio >= 0.7:
+                    best = max(best, ratio * 3.0)
+    return best
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--all", action="store_true", help="全部重算（默认只处理没改过的）")
@@ -267,62 +311,101 @@ def main():
 
     print("[subfolder] 合集分享 %d 个，共 %d 条条目"
           % (len(groups), sum(len(v) for v in groups.values())))
-    hit = miss = failed = 0
+
+    # ---------- 1) 先把每个合集的「目录 + 清单」收下来 ----------
+    os.makedirs(TREE_DIR, exist_ok=True)
+    os.makedirs(SHARE_DIR, exist_ok=True)
+    data, failed = {}, 0
     for pwd, items in groups.items():
         if not args.all and all("#/list/share/" in (it.get("share_url") or "") for it in items):
-            hit += len(items)
-            continue
+            man_path = os.path.join(SHARE_DIR, pwd + ".json")
+            if os.path.exists(man_path):
+                man = json.load(open(man_path, encoding="utf-8"))
+                data[pwd] = man
+                continue
         try:
             tk = (_json(TOKEN_API, {"pwd_id": pwd, "passcode": ""}) or {}).get("data") or {}
             stoken = tk.get("stoken") or ""
             dirs_all, files = collect_share(pwd, stoken)
-            # 根下只套一层「2026年10月(秋季档)番剧合集」的话把它拍平（少一层）
             tops = [f for f, v in dirs_all.items() if v.get("p") == "0" and f != "0"]
-            if len(tops) == 1:
+            if len(tops) == 1:                       # 拍平「季度合集」那层
                 wrapper = tops[0]
                 for info in dirs_all.values():
                     if info.get("p") == wrapper:
                         info["p"] = "0"
                 dirs_all.pop(wrapper, None)
             dirs_all.setdefault("0", {"n": "分享根目录", "p": ""})
-            folders = [(f, v["n"]) for f, v in dirs_all.items() if v.get("p") == "0" and f != "0"]
-            name2fid = {}
-            for f, v in dirs_all.items():
-                name2fid.setdefault(v["n"], f)
-            stamp = time.strftime("%Y-%m-%d %H:%M:%S")
-            os.makedirs(TREE_DIR, exist_ok=True)
-            os.makedirs(SHARE_DIR, exist_ok=True)
+            man = {"pwd": pwd, "stoken": stoken, "author": tk.get("author") or "",
+                   "title": tk.get("title") or "", "synced_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                   "dirs": dirs_all, "files": files}
             with open(os.path.join(TREE_DIR, pwd + ".json"), "w", encoding="utf-8") as fh:
-                json.dump({"pwd": pwd, "synced_at": stamp, "dirs": dirs_all}, fh, ensure_ascii=False)
+                json.dump({"pwd": pwd, "synced_at": man["synced_at"], "dirs": dirs_all},
+                          fh, ensure_ascii=False)
             with open(os.path.join(SHARE_DIR, pwd + ".json"), "w", encoding="utf-8") as fh:
-                json.dump({"pwd": pwd, "stoken": stoken, "author": tk.get("author") or "",
-                           "title": tk.get("title") or "", "synced_at": stamp,
-                           "dirs": dirs_all, "files": files}, fh, ensure_ascii=False)
+                json.dump(man, fh, ensure_ascii=False)
+            data[pwd] = man
         except Exception as exc:  # noqa: BLE001
             failed += len(items)
             print("  ! %s 列目录失败：%s（保留原链接）" % (pwd, exc))
+        time.sleep(0.2)
+
+    # 每个分享的二级目录（含上级是根的那些）
+    level2 = {}
+    for pwd, man in data.items():
+        level2[pwd] = [(f, v["n"]) for f, v in man["dirs"].items()
+                       if v.get("p") == "0" and f != "0"]
+
+    # 独立分享（只有一个条目）里的同名条目：兜底改指过去用
+    singles = {}
+    for it in anime.get("items", []):
+        pwd = it.get("pwd_id") or ""
+        if pwd and counts[pwd] == 1:
+            singles.setdefault(normalize_name(it.get("name") or ""), it)
+
+    # ---------- 2) 匹配：本包精确 -> 本包近似（所有层级都算候选） ----------
+    hit = miss = 0
+    for pwd, items in groups.items():
+        man = data.get(pwd)
+        if not man:
+            miss += len(items)
             continue
-        print("  %s：%d 条条目 vs 二级目录 %d 个" % (pwd, len(items), len(folders)))
+        # 候选：优先只认**二级目录**（分享根下面那一层）；二级目录都认不出来时，
+        # 才往下一层看（有些番藏在「合集」里面，比如 148.银魂合集/3年Z班 银八老师）
+        level2 = [(f, v["n"]) for f, v in man["dirs"].items() if v.get("p") == "0" and f != "0"]
+        deeper = [(f, v["n"]) for f, v in man["dirs"].items()
+                  if v.get("p") not in ("0", "") and f != "0"]
         for item in items:
-            entry = meta.get(normalize_name(item.get("name") or "")) or {}
-            fid, name = pick(item, entry, folders)
-            if fid:
-                item["share_url"] = SHARE_URL % (pwd, fid)
+            e = meta.get(normalize_name(item.get("name") or "")) or {}
+            vs, want = _variants(item, e), _season(item.get("name"))
+            best, got = -1.0, None
+            for fid, name in level2:
+                sc = _near(vs, want, name)
+                if sc > best:
+                    best, got = sc, (fid, name)
+            if best < 0.6:
+                for fid, name in deeper:
+                    sc = _near(vs, want, name)
+                    if sc > best:
+                        best, got = sc, (fid, name)
+            if got is not None and best >= 0.6:
+                fid, name = got
                 item["subfolder"] = name
-                if name2fid.get(name):
-                    item["subfolder_fid"] = name2fid[name]
+                if fid:
+                    item["subfolder_fid"] = fid
+                item["share_url"] = SHARE_URL % (pwd, fid)
+                item.pop("subfolder_fix", None)
                 hit += 1
             else:
                 item["share_url"] = "https://pan.quark.cn/s/" + pwd
                 item.pop("subfolder", None)
+                item.pop("subfolder_fid", None)
                 miss += 1
-                if miss <= 15:
-                    print("      · 没认出：%s" % item.get("name"))
-        time.sleep(0.3)
-
+                print("      · 没认出：%-30s（本包最高 %.2f %s）"
+                      % (item["name"][:30], best if best > 0 else 0,
+                         (got[1][:26] if got else "-")))
     with open(anime_path, "w", encoding="utf-8") as fh:
         json.dump(anime, fh, ensure_ascii=False)
-    print("[subfolder] 改指二级目录 %d ｜ 没认出 %d ｜ 列目录失败 %d" % (hit, miss, failed))
+    print("[subfolder] 定位到二级目录 %d ｜ 没认出 %d ｜ 列目录失败 %d" % (hit, miss, failed))
     return 0
 
 
