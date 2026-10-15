@@ -18,15 +18,17 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 4K动漫 · 夸克 spider（配置里写 csp_Anime4KGuard）
  *
- * 两条路：
- *  1) 【首选】直接调用饭太硬 jar 自己的夸克解析：真正的实现类
- *     com.github.catvod.spider.Cloud_quark 在**解密后的 dex**里（由 Init 用一个子
- *     DexClassLoader 加载），所以要走 Init.loader() + loadClass 拿实例；
- *     ext 原样透传给它（{"Cloud-drive": "tvfan/Cloud-drive.txt"}），
- *     网盘 Cookie / 扫码登录（夸父扫码登录）全由饭太硬那套负责。
- *  2) 【兜底】拿不到它的实现时，走自带的极简夸克客户端：
- *     分享令牌 -> 列目录 -> 转存 -> file/download 直链（原画）/ file/play 转码流（智能）。
- *     这条路需要 __puus 会话：auto 从本机 /api/session 取，或 ext.cookie 手填。
+ * 默认行为＝和玩偶哥哥完全一致：**详情/播放都直接调用饭太硬 jar 里那套夸克解析**
+ * （com.github.catvod.spider.Cloud_quark，运行在解密 dex 的子 DexClassLoader 里，
+ * 只能经 Init.loader() 拿到），线路名就是它的 夸父原 / 夸父智，
+ * 播放地址是 app 本地代理形态 http://127.0.0.1:<端口>/proxy/play/夸父盘/...，
+ * 播放器不需要任何 header。会话（Cookie/扫码登录）由饭太硬那套负责。
+ *
+ * 目录数据仍然是我们自己的：GitHub 上的静态 anime.json。
+ *
+ * 可选兜底：ext 里加 "fallback": true 时，才启用自带的极简夸克客户端
+ * （自己转存 + 取流，线路名同样是 夸父原/夸父智，但返回 CDN 直链 + header，
+ * 需要播放器把 Cookie 带上）。默认关闭。
  */
 public class Anime4KGuard extends Spider {
 
@@ -44,8 +46,10 @@ public class Anime4KGuard extends Spider {
 
     private Context appContext = null;   // 转发给饭太硬自己的实现用
     private String extRaw = "";          // ext 原文，原样透传
-    private Spider realQuark = null;     // 饭太硬 jar 里的 Cloud_quark 实例（可能为 null）
-    private boolean realTried = false;
+    private Spider realQuark = null;     // 当前生效的 Cloud_quark 实例
+    private Spider realPlain = null;     // 用配置 ext 原样初始化的实例（优先）
+    private Spider realMine = null;      // 配置里没会话时，用本机 /Cloud-drive.txt 补出来的实例
+    private boolean plainTried = false, mineTried = false;
     private String realReason = "未尝试";   // 饭太硬原生那条路失败的原因（写进详情，方便排查）
     private String cookie = "";
     private String dataUrl = "";
@@ -81,6 +85,9 @@ public class Anime4KGuard extends Spider {
             // 兜底源：本机服务 -> GitHub raw
             extraUrls.add(LOCAL_DATA);
             extraUrls.add(RAW_DATA);
+            // 默认（ext 没写 "fallback": true）不碰自家那套：
+            // 取流全交给饭太硬原生，所以不需要我们的 cookie，也不需要 __puus。
+            if (!fallbackOn()) return;
             if (cookie != null && !cookie.contains("pus")) cookie = "";
             // cookie 没填或还是占位符时，去服务端 /api/session 自动取
             if (!authed() || cookie.startsWith("\u2190") || cookie.contains("贴")) {
@@ -276,8 +283,14 @@ public class Anime4KGuard extends Spider {
                 + "}";
     }
 
-    /* ===================== 详情：列剧集 ===================== */
+    /* ===================== 详情：交给饭太硬原生的夸克解析 ===================== */
 
+    /**
+     * 只给饭太硬原生那两档（夸父原 / 夸父智），和玩偶哥哥完全一致：
+     * 我们自己那套「原画/智能」直链列表**默认不出**（实测在影视仓里播放器不带
+     * header，直链一律 412，不如不给）。真想留作兜底，可以在 ext 里加
+     * `"fallback": true`，那时才会追加同名两档（走我们自己的取流）。
+     */
     @Override
     public String detailContent(List<String> ids) {
         try {
@@ -288,13 +301,55 @@ public class Anime4KGuard extends Spider {
             String pwd = item.str("pwd_id");
             if (pwd.isEmpty()) return fail("该条目不是夸克分享（网盘：" + item.str("drive_name") + "）");
 
+            // 饭太硬原生那条（和玩偶哥哥同一条路）：/proxy/play/... 代理直链
+            String[] theirs = realDetail(pwd);
+            String from, url, src;
+            if (theirs != null) {
+                from = theirs[0];
+                url = theirs[1];
+                src = "饭太硬原生(" + from.replace("$$$", "/") + ")";
+            } else if (fallbackOn()) {
+                // 兜底（默认关）：自己枚举剧集 + 自己的取流，名字仍用夸父原/夸父智
+                String[] mine = ownPlayList(pwd, item.str("name"));
+                if (mine == null) return fail("两套解析都没出播放列表（饭太硬：" + realReason + "；自带：没找到视频文件）");
+                from = mine[0];
+                url = mine[1];
+                src = "自带同名两档（饭太硬原生不可用：" + realReason + "）";
+            } else {
+                return fail("饭太硬原生解析没出播放列表：" + realReason
+                        + "。先在「🗂我的云盘┃配置」里扫码登录夸克，或让本机 server.py 提供有效会话");
+            }
+            return "{\"list\":[{\"vod_id\":\"4k:" + Json.esc(id) + "\""
+                    + ",\"vod_name\":" + J.q(item.str("name"))
+                    + ",\"vod_pic\":" + J.q(item.str("vod_pic"))
+                    + ",\"vod_content\":" + J.q("画质 " + item.str("resolution")
+                        + " ｜ 修复 " + item.str("model") + " ｜ 解析：" + src)
+                    + ",\"vod_play_from\":" + J.q(from)
+                    + ",\"vod_play_url\":" + J.q(url)
+                    + "}]}";
+        } catch (Throwable t) {
+            return fail("详情解析失败：" + t.getMessage());
+        }
+    }
+
+    /** 是否允许自带的直链兜底（ext 里 "fallback": true 才开，默认关） */
+    private boolean fallbackOn() {
+        try {
+            if (extRaw.startsWith("{")) return "true".equals(J.parse(extRaw).str("fallback"));
+        } catch (Throwable ignore) { }
+        return false;
+    }
+
+    /** 自带那套：枚举剧集 -> 夸父原(源文件直链) / 夸父智(转码 m3u8)；失败返回 null */
+    private String[] ownPlayList(String pwd, String name) {
+        try {
             String stoken = stoken(pwd);
             List<J> root = listDir(pwd, stoken, "0");
             String startFid = "0";
-            // 整季合集：按番名下钻找对应文件夹
-            if (!root.isEmpty()) startFid = findDir(pwd, stoken, root, item.str("name"));
+            if (!root.isEmpty()) startFid = findDir(pwd, stoken, root, name);
             List<J> eps = new ArrayList<J>();
             collect(pwd, stoken, startFid, eps, 0, 600);
+            if (eps.isEmpty()) return null;
             StringBuilder raw = new StringBuilder(), smart = new StringBuilder();
             for (int i = 0; i < eps.size(); i++) {
                 J f = eps.get(i);
@@ -304,45 +359,9 @@ public class Anime4KGuard extends Spider {
                 raw.append(label).append("$").append(base).append(":r");
                 smart.append(label).append("$").append(base).append(":s");
             }
-            // 自带两档，名字沿用饭太硬那套：夸父原＝源文件直链（全分辨率）、
-            // 夸父智＝夸克转码流（m3u8，播放器最友好）。
-            // 名字用「夸父原/夸父智」不只是好看：饭太硬那套逻辑就是按
-            // contains("夸父原")/contains("夸父智") 分支的，同名以后两边互换也不会踩坑。
-            String mineFrom = "", mineUrl = "";
-            if (!eps.isEmpty()) {
-                mineFrom = "夸父原$$$夸父智";
-                mineUrl = raw + "$$$" + smart;
-            }
-            // 饭太硬原生那条（和玩偶哥哥同一条路）：夸父原/夸父智
-            String[] theirs = realDetail(pwd);
-            String from = theirs != null ? theirs[0] : "";
-            String url = theirs != null ? theirs[1] : "";
-            String nativeFrom = from;                // 饭太硬自己的名字（夸父原/夸父智），原样保留
-            String src;
-            if (!from.isEmpty()) {
-                // 原生那条能用：**只给它的两档**。两条线名字一样（都叫夸父原/夸父智），
-                // 同时塞进去 app 里会出现两条同名线路，看着像 bug。
-                src = "饭太硬原生(" + nativeFrom + ")";
-            } else if (!mineFrom.isEmpty()) {
-                from = mineFrom;                     // 兜底：同名两档，走我们自己的取流
-                url = mineUrl;
-                src = "自带同名两档（饭太硬原生不可用：" + realReason + "）";
-            } else {
-                return fail("两套解析都没出播放列表（饭太硬：" + realReason + "；自带：没找到视频文件）");
-            }
-            // 把线路名写进简介，方便一眼看到 app 里到底给了几条
-            String fromList = from.replace("$$$", " / ");
-            return "{\"list\":[{\"vod_id\":\"4k:" + Json.esc(id) + "\""
-                    + ",\"vod_name\":" + J.q(item.str("name"))
-                    + ",\"vod_pic\":" + J.q(item.str("vod_pic"))
-                    + ",\"vod_content\":" + J.q("画质 " + item.str("resolution")
-                        + " ｜ 修复 " + item.str("model") + " ｜ 共 " + eps.size() + " 集"
-                        + " ｜ 解析：" + src + " ｜ 线路：" + fromList)
-                    + ",\"vod_play_from\":" + J.q(from)
-                    + ",\"vod_play_url\":" + J.q(url)
-                    + "}]}";
+            return new String[]{"夸父原$$$夸父智", raw + "$$$" + smart};
         } catch (Throwable t) {
-            return fail("详情解析失败：" + t.getMessage());
+            return null;
         }
     }
 
@@ -394,55 +413,35 @@ public class Anime4KGuard extends Spider {
     /**
      * 拿到饭太硬 jar 里的夸克实现（com.github.catvod.spider.Cloud_quark）。
      *
-     * 关键点：饭太硬把真正的实现类放在**解密后的 dex** 里，用 Init 里的子
-     * DexClassLoader 加载（loader dex 里的 *Guard 只是转发壳）。我们的类在 app
-     * 的 ClassLoader 里，父加载器看不到子加载器的类，所以只能走 Init.loader()。
+     * 真正的实现类在**解密后的 dex** 里，由 Init 的子 DexClassLoader 加载
+     * （loader dex 里的 *Guard 只是转发壳）；我们的类在 app 的 ClassLoader 里，
+     * 父加载器看不到子加载器的类，所以只能走 Init.loader()。
      */
-    private Spider real() {
-        if (realTried) return realQuark;
-        realTried = true;
+    private Spider build(String ext) {
         try {
             ClassLoader cl = Init.loader();
             if (cl == null) { realReason = "Init.loader() 返回空"; return null; }
             Class<?> c = cl.loadClass("com.github.catvod.spider.Cloud_quark");
             Spider s = (Spider) c.newInstance();
-            // 注意：Cloud-drive 是**全线路共用**的键（Pan.init 会把同一个 ext 喂给 4 个网盘
-            // 后端，拿到含 pus 的 cookie 就写进共用的 N0 单例）。所以配置里保持饭太硬官方
-            // 的占位写法，我们在这里**只在本次调用内**补一个可用的 http 形态：
-            // 只有当配置里的 ext 没有带 http 地址时才补，且服务端会先校验 cookie 有效性，
-            // 无效就返回不带 quarkCookie 的响应 -> jar 连 s0() 都不会调 -> 别人的会话不受影响。
-            String jarExt = extRaw;
-            if (jarExt == null || jarExt.trim().isEmpty() || !jarExt.contains("http")) {
-                jarExt = "{\"Cloud-drive\":" + J.q(serverUrl.isEmpty() ? SERVER_DATA + "/Cloud-drive.txt"
-                        : serverUrl.replaceAll("/+$", "") + "/Cloud-drive.txt") + "}";
-            }
-            s.init(appContext, jarExt);
-            realQuark = s;
+            s.init(appContext, ext);
+            return s;
         } catch (Throwable t) {
-            realQuark = null;
             realReason = "加载 Cloud_quark 失败：" + t;
+            return null;
         }
-        return realQuark;
     }
 
-    /** 用饭太硬的实现解析这个分享，返回 {vod_play_from, vod_play_url}；失败返回 null 并把原因记进 realReason */
-    private String[] realDetail(String pwd) {
+    /** 用某个实例解析分享，返回 {vod_play_from, vod_play_url}；失败返回 null 并记原因 */
+    private String[] detailOf(Spider rq, String pwd) {
+        if (rq == null) return null;
         try {
-            Spider rq = real();
-            if (rq == null) {
-                realReason = "拿不到 Cloud_quark（Init.loader() 为空或类加载失败）";
-                return null;
-            }
             String json = rq.detailContent(java.util.Arrays.asList("https://pan.quark.cn/s/" + pwd));
             if (json == null || json.length() < 20) {
                 realReason = "它的详情返回空（多为未扫码登录）";
                 return null;
             }
             List<J> list = J.parse(json).arr("list");
-            if (list.isEmpty()) {
-                realReason = "它的详情没有 list";
-                return null;
-            }
+            if (list.isEmpty()) { realReason = "它的详情没有 list"; return null; }
             String from = list.get(0).str("vod_play_from");
             String url = list.get(0).str("vod_play_url");
             if (from.isEmpty() || url.isEmpty()) {
@@ -454,6 +453,54 @@ public class Anime4KGuard extends Spider {
             realReason = "调用它的详情抛异常：" + t;
             return null;
         }
+    }
+
+    /**
+     * 解析分享。两步，且**优先用用户自己的登录态**：
+     *  1) 用配置里的 ext 原样初始化 —— 用户在「我的云盘」扫码登录的会话就在共用单例里，
+     *     这时不碰任何我们的东西；
+     *  2) 只有在第 1 步出不来列表（＝没有会话）时，才用本机 /Cloud-drive.txt 补一次
+     *     （服务端会先校验 cookie 有效才吐，所以不会污染其它线路）。
+     */
+    private String[] realDetail(String pwd) {
+        if (!plainTried) {
+            plainTried = true;
+            realPlain = build(extRaw.isEmpty() ? "{}" : extRaw);
+        }
+        String[] r = detailOf(realPlain, pwd);
+        if (r != null) { realQuark = realPlain; return r; }
+
+        if (!extRaw.contains("http")) {
+            if (!mineTried) {
+                mineTried = true;
+                String base = serverUrl.isEmpty() ? SERVER_DATA : serverUrl.replaceAll("/+$", "");
+                realMine = build("{\"Cloud-drive\":" + J.q(base + "/Cloud-drive.txt") + "}");
+            }
+            r = detailOf(realMine, pwd);
+            if (r != null) {
+                realQuark = realMine;
+                realReason = "配置里没有会话，用了本机 server.py 的会话";
+                return r;
+            }
+        }
+        return null;
+    }
+
+    /** playerContent 用：详情成功后已经定了用哪个实例；没定过就按同样顺序补一个 */
+    private Spider real() {
+        if (realQuark != null) return realQuark;
+        if (!plainTried) {
+            plainTried = true;
+            realPlain = build(extRaw.isEmpty() ? "{}" : extRaw);
+        }
+        if (realPlain != null) { realQuark = realPlain; return realQuark; }
+        if (!extRaw.contains("http") && !mineTried) {
+            mineTried = true;
+            String base = serverUrl.isEmpty() ? SERVER_DATA : serverUrl.replaceAll("/+$", "");
+            realMine = build("{\"Cloud-drive\":" + J.q(base + "/Cloud-drive.txt") + "}");
+            realQuark = realMine;
+        }
+        return realQuark;
     }
 
     /* ===================== 播放：转存 + 取流（原画 / 智能） ===================== */
