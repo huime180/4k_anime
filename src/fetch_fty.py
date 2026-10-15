@@ -241,7 +241,7 @@ def build_line(host: str, kind: str = "cms") -> dict:
         # 取流/登录依旧由 jar 里的网盘引擎负责。
         return {
             "key": "4k_anime",
-            "name": "🎬4K动漫┃夸克",
+            "name": "🎬4K动漫A┃官方玩偶解析",
             "type": 3,
             "api": "csp_WoGGGuard",
             "timeout": 30,
@@ -260,7 +260,7 @@ def build_line(host: str, kind: str = "cms") -> dict:
         # 最后才去本机 server.py 兜底。
         return {
             "key": "4k_anime",
-            "name": "🎬4K动漫┃夸克(自带)",
+            "name": "🎬4K动漫B┃自带解析",
             "type": 3,
             "api": "csp_Quark4K",
             "timeout": 30,

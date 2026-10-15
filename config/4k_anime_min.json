@@ -4,7 +4,7 @@
  "sites": [
   {
    "key": "4k_anime",
-   "name": "🎬4K动漫┃夸克(自带)",
+   "name": "🎬4K动漫B┃自带解析",
    "type": 3,
    "api": "csp_Quark4K",
    "timeout": 30,
