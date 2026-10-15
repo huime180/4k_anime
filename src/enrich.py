@@ -8,6 +8,11 @@
 年份 / 地区 / 导演 / 演员（声优）。写入 data/meta.json 作为长期缓存。
 
 缓存键为归一化后的番名，因此重复运行不会重复请求。
+
+    python3 src/enrich.py                 # 只补缺的（增量）
+    python3 src/enrich.py --jobs 8        # 并发 8 路：请求本身很快，慢的是串行等待 + 失败重试
+    python3 src/enrich.py --limit 20      # 只跑 20 个（调脚本时用）
+    python3 src/enrich.py --all           # 全部重跑（忽略缓存）
 """
 
 from __future__ import annotations
@@ -18,10 +23,12 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from names import name_score, normalize_name  # noqa: E402
@@ -201,21 +208,30 @@ def pick_actors(chars, limit=12):
 
 
 def details_of(bgm_id):
-    """详情四件套：年份 / 地区 / 导演 / 演员（details=True 表示这一轮已经问过了）"""
-    out = {"year": "", "area": "", "director": "", "actor": "", "details": True}
+    """详情四件套：年份 / 地区 / 导演 / 演员
+
+    details=True 表示**三个接口都拿到了**（不是"问过了"）——
+    被 CDN 掐断的那次不算数，下一轮还会重试，否则一次网络抖动就把这部的
+    导演/演员永久留空了。
+    """
+    out = {"year": "", "area": "", "director": "", "actor": "",
+           "details": False, "no_cast": False}
     if not bgm_id:
         return out
     detail = bgm_get("/subjects/%s" % bgm_id)
     info = infobox_map(detail)
     persons_list = bgm_get("/subjects/%s/persons" % bgm_id)
     chars = bgm_get("/subjects/%s/characters" % bgm_id)
-    date = str((detail or {}).get("date") or "")
-    out["year"] = (date or "")[:4]
-    out["area"] = pick_area(info, detail)
+
+    date = str((detail or {}).get("date") or "") if isinstance(detail, dict) else ""
+    out["year"] = date[:4]
+    out["area"] = pick_area(info, detail if isinstance(detail, dict) else {})
     out["director"] = pick_director(
         info, persons_list if isinstance(persons_list, list) else [])
     ac = chars if isinstance(chars, list) else []
     out["actor"] = pick_actors(ac)
+    out["details"] = bool(detail) and isinstance(persons_list, list) and isinstance(chars, list)
+    out["no_cast"] = isinstance(chars, list) and not chars      # 番组确实没有角色/声优
     return out
 
 
@@ -288,60 +304,84 @@ def main():
             return True                      # 没匹配上的别反复试
         if not e.get("image"):
             return False
-        return bool(e.get("details")) or not e.get("bgm_id")
+        if not e.get("bgm_id"):
+            return True
+        if not e.get("details"):
+            return False
+        # 拿到过详情，但演员是空的、而且这次不是「本来就没有声优」-> 值得再试一次
+        return bool(e.get("actor")) or bool(e.get("no_cast"))
 
     def only_details(k):
         """已经匹配到番组、只差详情（年份/地区/导演/演员）"""
         e = meta.get(k) or {}
-        return bool(e.get("bgm_id")) and not e.get("details")
+        return bool(e.get("bgm_id")) and not done(k)
 
     todo = [k for k in keys if not (only_missing and done(k))]
     if limit:
         todo = todo[:limit]
     print("[enrich] 待补全 %d / 共 %d 个番名" % (len(todo), len(keys)))
 
-    hit = 0
-    for idx, key in enumerate(todo, 1):
+    jobs = 1
+    if "--jobs" in argv:
+        jobs = max(1, int(argv[argv.index("--jobs") + 1]))
+
+    lock = threading.Lock()
+    stat = {"hit": 0}
+
+    def handle(idx, key):
+        """补一个番名：番组已确定的走快路径（只补详情），否则先搜索再补详情"""
         title = keys[key]
-        # 快路径：番组已确定，只补详情（省掉一次搜索，重跑时不会重复下载封面/简介）
+        entry = None
+        found = None
         if only_details(key):
+            # 快路径：不重新搜索，也不重复下载封面/简介
             entry = dict(meta[key])
             try:
-                extra = details_of(entry["bgm_id"])
+                entry.update(details_of(entry["bgm_id"]))
             except Exception as exc:  # noqa: BLE001
-                print("  [%d/%d] %s -> 详情异常 %s" % (idx, len(todo), title[:24], exc))
-                extra = {"details": True}
-            entry.update(extra)
-            entry.setdefault("year", (entry.get("date") or "")[:4])
-            meta[key] = entry
-            fresh[key] = entry
-            hit += 1
-            print("  [%d/%d] %-28s -> 详情 %s / %s / %s" % (
-                idx, len(todo), title[:28], entry.get("year") or "-",
-                entry.get("area") or "-", (entry.get("director") or "-")[:12]))
-            if idx % 25 == 0:
-                _save(meta)
-            time.sleep(0.3)
-            continue
-        try:
-            found = resolve(title)
-        except Exception as exc:  # noqa: BLE001
-            print("  [%d/%d] %s -> 异常 %s" % (idx, len(todo), title[:24], exc))
-            found = None
-        if found:
-            meta[key] = found
-            fresh[key] = found
-            hit += 1
-            print("  [%d/%d] %-28s -> %s (%.2f)" % (
-                idx, len(todo), title[:28], (found["name_cn"] or found["bgm_name"])[:22],
-                found["match"]))
+                entry["details"] = False          # 下一轮再试
+                with lock:
+                    print("  [%d/%d] %s -> 详情异常 %s" % (idx, len(todo), title[:24], exc))
+            note = "详情 %s / %s / %s" % (entry.get("year") or "-", entry.get("area") or "-",
+                                        (entry.get("director") or "-")[:12])
         else:
-            meta[key] = {"bgm_id": None, "image": "", "miss": True}
-            print("  [%d/%d] %-28s -> 未匹配" % (idx, len(todo), title[:28]))
-        if idx % 25 == 0:
-            _save(meta)
-        time.sleep(0.35)
+            try:
+                found = resolve(title)
+            except Exception as exc:  # noqa: BLE001
+                found = None
+                with lock:
+                    print("  [%d/%d] %s -> 异常 %s" % (idx, len(todo), title[:24], exc))
+            note = ("%s (%.2f)" % ((found["name_cn"] or found["bgm_name"])[:22], found["match"])
+                    if found else "未匹配")
 
+        with lock:
+            if entry is not None:
+                meta[key] = entry
+                fresh[key] = entry
+                stat["hit"] += 1
+            elif found:
+                meta[key] = found
+                fresh[key] = found
+                stat["hit"] += 1
+            else:
+                meta[key] = {"bgm_id": None, "image": "", "miss": True}
+            print("  [%d/%d] %-28s -> %s" % (idx, len(todo), title[:28], note))
+            if len(fresh) % 25 == 0:
+                _save(meta)
+
+    if jobs > 1:
+        # Bangumi 单个请求只要几百毫秒，慢的是「失败重试 + 串行等待」，
+        # 所以这里允许并发抓；每个 workers 各自独立，meta 写入用锁护住。
+        print("[enrich] 并发 %d 路" % jobs)
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            list(pool.map(lambda kv: handle(*kv), list(enumerate(todo, 1))))
+    else:
+        for idx, key in enumerate(todo, 1):
+            handle(idx, key)
+            time.sleep(0.35)
+
+    _save(meta)
+    hit = stat["hit"]
     _save(meta)
     ok = sum(1 for v in meta.values() if v.get("image"))
     print("[enrich] 本轮命中 %d/%d；累计有封面 %d/%d"

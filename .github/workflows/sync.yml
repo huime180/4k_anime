@@ -35,7 +35,7 @@ jobs:
         run: python3 src/sync_table.py
 
       - name: 补全封面与详情（Bangumi：年份/地区/导演/演员/简介）
-        run: python3 src/enrich.py
+        run: python3 src/enrich.py --jobs 4
         continue-on-error: true
 
       - name: 跟随饭太硬官方 jar 重建合并 jar（拿不到就保持现有 jar）
@@ -53,6 +53,7 @@ jobs:
       - name: 解析饭太硬官方配置并插入 4k动漫线路
         env:
           DATA_BASE: ${{ vars.DATA_BASE }}
+        continue-on-error: true
         run: |
           # 抓不到时脚本会保留现有配置不覆盖，所以这里失败不影响 App
           python3 src/fetch_fty.py
