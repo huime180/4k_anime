@@ -166,11 +166,68 @@ class Quark:
         self.saved_dir = saved_dir
         self._saved_dir_fid = None
         self._lock = threading.Lock()
-        # 【实测关键】必须复用会话 Cookie（__pugs）：取流地址由 CDN 校验会话，
+        # 【实测关键】必须复用会话 Cookie（__puus）：取流地址由 CDN 校验会话，
         # 不带着它去请求会直接 412 Precondition Failed。
         self._jar = http.cookiejar.CookieJar()
         self._opener = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(self._jar))
+        # __puus 会随二维码登录/换号而变，缓存 6 小时，失败则 60 秒后重试
+        self._puus_at = 0.0     # 上次成功取到的时间
+        self._puus_try = 0.0    # 上次尝试的时间（失败退避用）
+
+    # ---------------- 会话 Cookie（__puus） ---------------- #
+    # 2026-10 实测结论：
+    #   * /1/clouddrive/config 的响应头会下发 Set-Cookie: __puus=<...>; Max-Age=86400
+    #   * 夸克 CDN 的直链（file/download 直链、以及 /file/play 出来的转码 m3u8）
+    #     缺 __puus 一律 412 Precondition Failed（Tengine），
+    #     带上之后：直链 206 video/x-matroska、m3u8 200、分片 200 video/MP2T。
+    #   * 二维码登录拿到的 Cookie 里**没有** __puus，所以必须主动去要一次，
+    #     否则「显示了但播放不了」。
+    PUUS_TTL = 6 * 3600
+    PUUS_RETRY = 60
+
+    def _jar_cookie(self, name):
+        for c in self._jar:
+            if c.name == name:
+                return c.value
+        return ""
+
+    def refresh_puus(self, force=False):
+        """确保会话 jar 里有 __puus（CDN 直链的通行证）。"""
+        if not self.cookie:
+            return ""
+        now = time.time()
+        got = self._jar_cookie("__puus")
+        if not force:
+            if got and now - self._puus_at < self.PUUS_TTL:
+                return got
+            if now - self._puus_try < self.PUUS_RETRY:
+                return got
+        self._puus_try = now
+        try:
+            self._request("/1/clouddrive/config", {"pr": "ucpro", "fr": "pc"})
+        except QuarkError:
+            pass
+        got = self._jar_cookie("__puus")
+        if got:
+            self._puus_at = now
+        return got
+
+    def session_cookie(self):
+        """完整会话 Cookie 串（登录 Cookie + __puus 等），供 spider / 播放器使用"""
+        self.refresh_puus()
+        parts, seen = [], set()
+        for p in (self.cookie or "").split(";"):
+            if "=" not in p:
+                continue
+            parts.append(p.strip())
+            seen.add(p.split("=", 1)[0].strip())
+        for c in self._jar:
+            if c.name in seen:
+                continue
+            parts.append("%s=%s" % (c.name, c.value))
+            seen.add(c.name)
+        return "; ".join(parts)
 
     # ---------------- 底层请求 ---------------- #
     def _request(self, path, params=None, body=None, method=None, retries=2):
@@ -895,6 +952,7 @@ class Quark:
         headers = dict(extra_headers or {})
         headers.setdefault("User-Agent", UA)
         headers.setdefault("Referer", "https://pan.quark.cn/")
+        self.refresh_puus()
         pairs = ["%s=%s" % (c.name, c.value) for c in self._jar]
         if pairs:
             headers["Cookie"] = "; ".join(pairs)
@@ -942,6 +1000,7 @@ class Quark:
         所以可以让播放器直连 CDN（而不是我们转发），吞吐不再受代理限制。
         格式按 TVBox spider 约定：每行一个 "Key: Value"。
         """
+        self.refresh_puus()
         pairs = ["%s=%s" % (c.name, c.value) for c in self._jar]
         lines = []
         if pairs:
@@ -959,6 +1018,7 @@ class Quark:
         headers = {"User-Agent": UA, "Referer": "https://pan.quark.cn/",
                    "Accept": "*/*"}
         headers.update(extra_headers or {})
+        self.refresh_puus()
         return self._opener.open(urllib.request.Request(url, headers=headers),
                                  timeout=60)
 

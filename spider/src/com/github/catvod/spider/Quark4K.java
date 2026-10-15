@@ -43,6 +43,7 @@ public class Quark4K extends Spider {
     private String serverUrl = "";
     private static final String SERVER_DATA = "http://192.168.1.102:8787";
     private String saveDirFid = null;
+    private long puusTryAt = 0;
 
     private static String dataCache = null;
     private static long dataCacheAt = 0;
@@ -75,8 +76,53 @@ public class Quark4K extends Spider {
                 String auto = fetchCookieFromServer();
                 if (auto != null && !auto.isEmpty()) cookie = auto;
             }
+            ensurePuus();   // 二维码登录拿到的 cookie 里没有 __puus，缺了 CDN 全 412
         } catch (Throwable t) {
             // 配置坏了不该让 app 崩
+        }
+    }
+
+    /**
+     * 补上 __puus —— 夸克 CDN 直链的通行证。
+     *
+     * 2026-10 实测：GET /1/clouddrive/config 会在 Set-Cookie 里下发
+     * __puus=<...>; Max-Age=86400。缺了它，file/download 直链和 /file/play
+     * 出来的转码 m3u8 一律「412 Precondition Failed」——现象就是「条目能显示、
+     * 一点播放就失败」。所以每次播放前都确保带上。
+     */
+    private void ensurePuus() {
+        if (cookie == null || cookie.isEmpty()) return;
+        if (cookie.contains("__puus=")) return;
+        long now = System.currentTimeMillis();
+        if (now - puusTryAt < 60000) return;      // 失败退避 60s
+        puusTryAt = now;
+        try {
+            HttpURLConnection c = (HttpURLConnection)
+                    new URL(API + "/config?pr=ucpro&fr=pc").openConnection();
+            c.setConnectTimeout(12000);
+            c.setReadTimeout(15000);
+            c.setRequestProperty("User-Agent", PC_UA);
+            c.setRequestProperty("Referer", "https://pan.quark.cn/");
+            c.setRequestProperty("Cookie", cookie);
+            Map<String, List<String>> hs = c.getHeaderFields();
+            StringBuilder add = new StringBuilder();
+            for (Map.Entry<String, List<String>> e : hs.entrySet()) {
+                if (e.getKey() == null || !"set-cookie".equalsIgnoreCase(e.getKey())) continue;
+                for (String line : e.getValue()) {
+                    int eq = line.indexOf('=');
+                    if (eq <= 0) continue;
+                    int semi = line.indexOf(';');
+                    String name = line.substring(0, eq).trim();
+                    String val = line.substring(eq + 1, semi < 0 ? line.length() : semi).trim();
+                    if (name.isEmpty() || val.isEmpty() || cookie.contains(name + "=")) continue;
+                    add.append("; ").append(name).append('=').append(val);
+                }
+            }
+            InputStream in = c.getInputStream();     // 响应体没用，但需要走完请求
+            if (in != null) in.close();
+            if (add.length() > 0) cookie = cookie + add.toString();
+        } catch (Throwable ignore) {
+            // 拿不到就照旧，播放时会如实报错
         }
     }
 
@@ -234,20 +280,24 @@ public class Quark4K extends Spider {
             if (!root.isEmpty()) startFid = findDir(pwd, stoken, root, item.str("name"));
             List<J> eps = new ArrayList<J>();
             collect(pwd, stoken, startFid, eps, 0, 600);
-            StringBuilder urls = new StringBuilder();
+            StringBuilder raw = new StringBuilder(), smart = new StringBuilder();
             for (int i = 0; i < eps.size(); i++) {
                 J f = eps.get(i);
-                if (i > 0) urls.append("#");
-                urls.append("第").append(String.format("%02d", i + 1)).append("集$")
-                    .append("4k:play:").append(pwd).append(":").append(f.str("fid")).append(":")
-                    .append(f.str("share_fid_token"));
+                String label = "第" + String.format("%02d", i + 1) + "集";
+                String base = "4k:play:" + pwd + ":" + f.str("fid") + ":" + f.str("share_fid_token");
+                if (i > 0) { raw.append("#"); smart.append("#"); }
+                raw.append(label).append("$").append(base).append(":r");
+                smart.append(label).append("$").append(base).append(":s");
             }
+            // 两档：原画＝源文件直链（全分辨率）；智能＝夸克转码流（HLS，最省事能播）
+            // —— 对齐玩偶哥哥的「夸父原 / 夸父智」，档位名用配置里的 原画 / 智能
+            String playUrl = eps.isEmpty() ? "" : raw + "$$$" + smart;
             return "{\"list\":[{\"vod_id\":\"4k:" + Json.esc(id) + "\""
                     + ",\"vod_name\":" + J.q(item.str("name"))
                     + ",\"vod_pic\":" + J.q(item.str("vod_pic"))
                     + ",\"vod_content\":" + J.q("画质 " + item.str("resolution")
                         + " ｜ 修复 " + item.str("model") + " ｜ 共 " + eps.size() + " 集")
-                    + ",\"vod_play_from\":\"原画\",\"vod_play_url\":" + J.q(urls.toString())
+                    + ",\"vod_play_from\":\"原画$$$智能\",\"vod_play_url\":" + J.q(playUrl)
                     + "}]}";
         } catch (Throwable t) {
             return fail("详情解析失败：" + t.getMessage());
@@ -297,17 +347,40 @@ public class Quark4K extends Spider {
         }
     }
 
-    /* ===================== 播放：转存 + 取直链 ===================== */
+    /* ===================== 播放：转存 + 取流（原画 / 智能） ===================== */
 
     @Override
     public String playerContent(String flag, String id, List<String> vipFlags) {
         try {
             if (!authed()) return media("未配置 quarkCookie：请在配置的 ext 里填 {\"cookie\":\"__puus=...\"}");
-            String[] p = id.split(":");   // 4k:play:<pwd>:<fid>:<share_token>
+            String[] p = id.split(":");   // 4k:play:<pwd>:<fid>:<share_token>[:r|s]
             if (p.length < 5) return media("播放地址格式错误");
             String pwd = p[2], fid = p[3], token = p[4];
+            String q = p.length > 5 ? p[5] : ("智能".equals(flag) ? "s" : "r");
+            ensurePuus();
             String own = saveToTemp(pwd, fid, token);
-            String url = downloadUrl(own);
+            String url, how;
+            if ("s".equals(q)) {
+                // 智能：夸克转码流（m3u8）。玩偶哥哥的「夸父智」就是这条路：
+                // /file/play 拿 video_list，转码是异步的所以要轮询几次。
+                url = transcodeUrl(own);
+                how = "智能·转码流";
+                if (url == null || url.isEmpty()) {
+                    url = downloadUrl(own);          // 转码还没好 -> 用源文件直链兜底
+                    how = "智能→原画兜底";
+                }
+            } else {
+                // 原画：file/download 直链，就是源文件本身（全分辨率、码率最高）
+                how = "原画·源文件直链";
+                url = "";
+                try {
+                    url = downloadUrl(own);
+                } catch (Throwable t) {
+                    url = transcodeUrl(own);         // 大文件被限/取链失败 -> 转码流兜底
+                    how = "原画→智能兜底(" + t.getMessage() + ")";
+                }
+            }
+            if (url == null || url.isEmpty()) return media("取流失败：" + how);
             return "{\"parse\":0,\"playUrl\":\"\",\"url\":" + J.q(url)
                     + ",\"header\":" + J.q(sessionHeader()) + "}";
         } catch (Throwable t) {
@@ -315,11 +388,38 @@ public class Quark4K extends Spider {
         }
     }
 
+    /** 夸克转码播放流：/file/play -> data.video_list[].url（m3u8，播放器最友好） */
+    private String transcodeUrl(String ownFid) {
+        for (int attempt = 0; attempt < 6; attempt++) {
+            for (String res : new String[]{"raw", "low"}) {
+                try {
+                    String u = playUrl(ownFid, res);
+                    if (u != null && !u.isEmpty()) return u;
+                } catch (Throwable ignore) { }
+            }
+            try { Thread.sleep(attempt < 3 ? 1200 : 2500); } catch (InterruptedException ignore) { }
+        }
+        return "";
+    }
+
+    private String playUrl(String ownFid, String resolution) throws Exception {
+        String q = "?pr=ucpro&fr=pc&fid=" + enc(ownFid) + "&resolution=" + enc(resolution);
+        J r = J.parse(http("GET", API + "/file/play" + q, null, ckHeader(), null));
+        J d = r.node("data");
+        if (d == null) return "";
+        for (J it : d.arr("video_list")) {
+            String u = it.str("url");
+            if (!u.isEmpty()) return u;
+        }
+        return "";
+    }
+
     private String media(String msg) {
         return "{\"parse\":0,\"playUrl\":\"\",\"url\":\"\",\"msg\":" + J.q(msg) + "}";
     }
 
     private String sessionHeader() {
+        ensurePuus();
         StringBuilder sb = new StringBuilder();
         String sc = sessionCookie();
         if (sc != null && !sc.isEmpty()) sb.append("Cookie: ").append(sc).append("\n");
@@ -328,8 +428,14 @@ public class Quark4K extends Spider {
         return sb.toString();
     }
 
-    /** 取流会话 Cookie（__puus），可能来自 quarkCookie 本身 */
+    /** 取流会话 Cookie（含 __puus） */
     private String sessionCookie() { return cookie; }
+
+    /** 统一的会话请求头：夸克的转存/取链/列目录都必须带登录 Cookie，否则 401 require login [guest] */
+    private String ckHeader() {
+        ensurePuus();
+        return "Cookie: " + cookie;
+    }
 
     /* ===================== 夸克接口 ===================== */
 
@@ -337,7 +443,7 @@ public class Quark4K extends Spider {
         String hit = stokenCache.get(pwd);
         if (hit != null) return hit;
         String body = "{\"pwd_id\":" + J.q(pwd) + ",\"passcode\":\"\"}";
-        J r = J.parse(http("POST", API + "/share/sharepage/token?pr=ucpro&fr=pc", body, null, null));
+        J r = J.parse(http("POST", API + "/share/sharepage/token?pr=ucpro&fr=pc", body, ckHeader(), null));
         J d = r.node("data");
         if (r.get("status") == null || !"200".equals(r.str("status")) || d == null)
             throw new Exception("分享不可用 " + r.str("message"));
@@ -350,7 +456,7 @@ public class Quark4K extends Spider {
         String q = "?pr=ucpro&fr=pc&pwd_id=" + enc(pwd) + "&stoken=" + enc(stoken)
                 + "&pdir_fid=" + enc(fid) + "&force=0&_page=1&_size=200&_fetch_total=1"
                 + "&_sort=" + enc("file_type:asc,file_name:asc");
-        J r = J.parse(http("GET", API + "/share/sharepage/detail" + q, null, null, null));
+        J r = J.parse(http("GET", API + "/share/sharepage/detail" + q, null, ckHeader(), null));
         J d = r.node("data");
         return d == null ? new ArrayList<J>() : d.arr("list");
     }
@@ -368,7 +474,7 @@ public class Quark4K extends Spider {
                 + ",\"to_pdir_fid\":" + J.q(sub) + ",\"pwd_id\":" + J.q(pwd)
                 + ",\"stoken\":" + J.q(stoken(pwd)) + ",\"pdir_fid\":\"0\""
                 + ",\"pdir_save_all\":false,\"exclude_fids\":[],\"scene\":\"link\"}";
-        J r = J.parse(http("POST", API + "/share/sharepage/save?pr=ucpro&fr=pc&uc_param_str=", body, null, null));
+        J r = J.parse(http("POST", API + "/share/sharepage/save?pr=ucpro&fr=pc&uc_param_str=", body, ckHeader(), null));
         J d = r.node("data");
         if (d == null || d.str("task_id").isEmpty()) throw new Exception("转存失败 " + r.str("message"));
         String own = waitTask(d.str("task_id"));
@@ -381,7 +487,7 @@ public class Quark4K extends Spider {
     private String waitTask(String taskId) throws Exception {
         for (int i = 0; i < 20; i++) {
             J r = J.parse(http("GET", API + "/task?pr=ucpro&fr=pc&task_id=" + enc(taskId) + "&retry_index=" + i,
-                    null, null, null));
+                    null, ckHeader(), null));
             J d = r.node("data");
             if (d != null && "2".equals(d.str("status"))) {
                 J sa = d.node("save_as");
@@ -397,7 +503,7 @@ public class Quark4K extends Spider {
 
     private String downloadUrl(String ownFid) throws Exception {
         String body = "{\"fids\":[" + J.q(ownFid) + "]}";
-        String hdr = "Cookie: " + cookie;
+        String hdr = ckHeader();
         J r = J.parse(http("POST", API + "/file/download?pr=ucpro&fr=pc&uc_param_str=", body, hdr, null));
         if (r.get("data") == null) throw new Exception(r.str("message"));
         for (J it : r.arr("data")) {
@@ -410,7 +516,7 @@ public class Quark4K extends Spider {
     private String ensureDir() throws Exception {
         if (saveDirFid != null) return saveDirFid;
         J r = J.parse(http("GET", API + "/file/sort?pr=ucpro&fr=pc&pdir_fid=0&_page=1&_size=200"
-                + "&_fetch_total=1&_sort=" + enc("file_type:asc,file_name:asc"), null, "Cookie: " + cookie, null));
+                + "&_fetch_total=1&_sort=" + enc("file_type:asc,file_name:asc"), null, ckHeader(), null));
         J d = r.node("data");
         if (d != null) for (J f : d.arr("list")) {
             if ("true".equals(f.str("dir")) && SAVE_DIR.equals(f.str("file_name"))) {
@@ -425,7 +531,7 @@ public class Quark4K extends Spider {
     private String createDir(String parent, String name) throws Exception {
         String body = "{\"pdir_fid\":" + J.q(parent) + ",\"file_name\":" + J.q(name)
                 + ",\"dir_path\":\"\",\"dir_init_lock\":false}";
-        J r = J.parse(http("POST", API + "/file?pr=ucpro&fr=pc", body, "Cookie: " + cookie, null));
+        J r = J.parse(http("POST", API + "/file?pr=ucpro&fr=pc", body, ckHeader(), null));
         J d = r.node("data");
         return d == null ? "" : d.str("fid");
     }

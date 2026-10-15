@@ -528,11 +528,12 @@ class Handler(BaseHTTPRequestHandler):
         """
         if not self.admin_ok(query):
             return self.send_json({"ok": False, "error": "需要正确的 key"}, 403)
-        ck = self.app.quark.cookie or ""
+        ck = self.app.quark.session_cookie() if self.app.quark.cookie else ""
         return self.send_json({
             "ok": bool(ck),
             "cookie": ck,
             "len": len(ck),
+            "puus": "__puus" in ck,
             "hint": "把这个 cookie 交给 csp_Quark4K 即可播放" if ck else "服务端未登录，请先扫码",
         })
 
@@ -758,6 +759,20 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------------- 网页 ---------------- #
     def page_index(self):
+        """首页直接吐 public/index.html —— 与 GitHub Pages 上完全同一份页面。
+
+        模板由 src/build_web.py 生成；本机 / Pages 的差别交给页面里的 JS
+        （探测同源 /health）自己判断，不再各维护一套 HTML。
+        """
+        static = os.path.join(ROOT, "public", "index.html")
+        try:
+            with open(static, "rb") as fh:
+                body = fh.read()
+            if body:
+                self.send_bytes(body, "text/html; charset=utf-8")
+                return
+        except OSError:
+            pass
         base = self.base_url()
         items = self.app.anime.get("items", [])
         cats = self.app.anime.get("categories", [])
