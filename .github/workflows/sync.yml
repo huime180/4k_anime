@@ -38,15 +38,6 @@ jobs:
         run: python3 src/enrich.py
         continue-on-error: true
 
-      - name: 自动解析饭太硬配置并插入 4k动漫线路（A/B 两份）
-        env:
-          PUBLIC_BASE: ${{ vars.PUBLIC_BASE }}
-          DATA_BASE: ${{ vars.DATA_BASE }}
-        continue-on-error: true
-        run: |
-          # 抓不到时脚本会保留现有配置不覆盖，所以这里失败不影响后面
-          python3 src/fetch_fty.py --host "${PUBLIC_BASE:-http://192.168.1.102:8787}"
-
       - name: 跟随饭太硬官方 jar 重建合并 jar（拿不到就保持现有 jar）
         run: |
           # 官方 jar 伪装成 .jpg，这里校验 md5 并解包到 work/merge/fty；
@@ -57,6 +48,17 @@ jobs:
           else
             echo "⚠️ 上游 jar 同步失败，保留现有 jar"
           fi
+
+      # 注意顺序：先重建 jar，再生成配置 —— 配置里写的 `;md5;<jar的md5>`
+      # 必须对应刚构建出来的 jar，否则 App 每次都会判定缓存失效。
+      - name: 自动解析饭太硬配置并插入 4k动漫线路（A/B 两份）
+        env:
+          PUBLIC_BASE: ${{ vars.PUBLIC_BASE }}
+          DATA_BASE: ${{ vars.DATA_BASE }}
+        continue-on-error: true
+        run: |
+          # 抓不到时脚本会保留现有配置不覆盖，所以这里失败不影响后面
+          python3 src/fetch_fty.py --host "${PUBLIC_BASE:-http://192.168.1.102:8787}"
 
       - name: 生成「玩偶哥哥式」静态站（供 csp_WoGGGuard 抓取）
         run: python3 src/build_site.py
