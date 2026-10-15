@@ -87,7 +87,14 @@ public class Quark4K extends Spider {
                 sb.append(",{\"type_id\":").append(J.q(c.str("type_id")))
                   .append(",\"type_name\":").append(J.q(c.str("type_name"))).append("}");
             }
-            sb.append("],\"list\":[]}");
+            // 首页也要给出条目，否则客户端看起来「4k动漫为空」
+            List<J> all = d.arr("items");
+            sb.append("],\"list\":[");
+            for (int i = 0; i < Math.min(24, all.size()); i++) {
+                if (i > 0) sb.append(",");
+                sb.append(brief(all.get(i)));
+            }
+            sb.append("]}");
             return sb.toString();
         } catch (Throwable t) {
             return "{\"class\":[{\"type_id\":\"4k_all\",\"type_name\":\"全部\"}],\"list\":[]}";

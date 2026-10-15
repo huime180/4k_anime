@@ -27,3 +27,6 @@ spider/verify/
 spider/merged/
 spider/pack/
 spider/renamed/
+spider/out/
+spider/dex/
+spider/pack/
