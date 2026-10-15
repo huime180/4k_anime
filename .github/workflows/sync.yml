@@ -34,7 +34,7 @@ jobs:
       - name: 同步在线表格
         run: python3 src/sync_table.py
 
-      - name: 补全封面与简介（Bangumi）
+      - name: 补全封面与详情（Bangumi：年份/地区/导演/演员/简介）
         run: python3 src/enrich.py
         continue-on-error: true
 
@@ -50,24 +50,17 @@ jobs:
 
       # 注意顺序：先重建 jar，再生成配置 —— 配置里写的 `;md5;<jar的md5>`
       # 必须对应刚构建出来的 jar，否则 App 每次都会判定缓存失效。
-      - name: 自动解析饭太硬配置并插入 4k动漫线路（A/B 两份）
+      - name: 解析饭太硬官方配置并插入 4k动漫线路
         env:
-          PUBLIC_BASE: ${{ vars.PUBLIC_BASE }}
           DATA_BASE: ${{ vars.DATA_BASE }}
-        continue-on-error: true
         run: |
-          # 抓不到时脚本会保留现有配置不覆盖，所以这里失败不影响后面
-          python3 src/fetch_fty.py --host "${PUBLIC_BASE:-http://192.168.1.102:8787}"
+          # 抓不到时脚本会保留现有配置不覆盖，所以这里失败不影响 App
+          python3 src/fetch_fty.py
 
+      - name: 导出静态数据（anime.json 带封面+详情、meta.json、占位封面）
+        run: python3 src/export_data.py
 
-      - name: 生成 TVBox 配置与静态页面
-        env:
-          PUBLIC_BASE: ${{ vars.PUBLIC_BASE }}
-        run: |
-          BASE="${PUBLIC_BASE:-http://127.0.0.1:8787}"
-          python3 src/build_config.py --base "$BASE"
-
-      - name: 生成统一首页（本机 / Pages 同一份 public/index.html）
+      - name: 生成首页（纯静态索引页）
         run: python3 src/build_web.py
 
       - name: 配置自检（配置里的 csp_X 必须在 jar 里有）

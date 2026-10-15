@@ -6,7 +6,7 @@ public class TestAnime4K {
     public static void main(String[] args) throws Exception {
         String id = args.length > 0 ? args[0] : "fef3dd82b3eb";
         Anime4KGuard s = new Anime4KGuard();
-        String ext = "{\"data\":\"http://127.0.0.1:8787/anime.json\"}";
+        String ext = "{\"data\":\"https://huime180.github.io/4k_anime/anime.json\"}";
         s.init(null, ext);
         System.out.println("home: " + cut(s.homeContent(false), 160));
         String detail = s.detailContent(Arrays.asList("4k:" + id));

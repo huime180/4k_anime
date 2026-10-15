@@ -1,5 +1,5 @@
 # 本项目不需要 pip 安装任何依赖：
-#   * 全部功能只用 Python 3.9+ 标准库
-#   * 扫码登录用的二维码库 segno 已 vendor 在 src/_vendor/segno/（BSD-3-Clause，见 NOTICE.md）
+#   * 全部功能只用 Python 3.9+ 标准库（json / urllib / zlib / struct …）
+#   * 只读/解析用的 curl 是系统命令，仅在某些网络下作为 HTTPS 兜底，不装也能跑
 #
 # 这份文件只是占位，方便部分平台识别项目语言。

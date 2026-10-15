@@ -10,7 +10,10 @@
     该 JSON   : 还带 // 注释，必须用宽松 JSON 解析
 
 本脚本抓它 -> 解码 -> 在「🗂我的云盘┃配置」后面插入 4k_anime -> 输出
-config/4k_anime_with_fty_cms.json，供 GitHub Actions 定时自动更新。
+config/4k_anime_with_fty.json（唯一一份配置），供 GitHub Actions 定时自动更新。
+
+只维护这一种线路写法：type 3 + csp_Anime4KGuard，解析/登录全部转发给 jar 里
+饭太硬原生的夸克实现；本项目自己的站点里**不含任何解析**，只放静态 JSON 数据。
 
 用法：
     python3 src/fetch_fty.py                      # 默认官方地址
@@ -32,8 +35,7 @@ import urllib.error
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "config", "4k_anime_with_fty_cms.json")          # 旧：type 1，走本机解析服务
-OUT_SPIDER = os.path.join(ROOT, "config", "4k_anime_with_fty.json")        # 配置 A：解析用饭太硬 jar 自带的夸克实现
+OUT = os.path.join(ROOT, "config", "4k_anime_with_fty.json")               # 唯一的配置：csp_Anime4KGuard
 
 # 数据源站点（只放 anime.json/meta.json/cover，不含任何解析）：默认 GitHub Pages，
 # 换 Cloudflare Pages 时把它设成 https://<项目>.pages.dev 即可（Action 里来自 vars.DATA_BASE）
@@ -123,7 +125,6 @@ MIRRORS = [
 ]
 
 # 4k_anime 线路的接口地址（服务端）。同机/跨设备都可用局域网 IP。
-DEFAULT_HOST = os.environ.get("PUBLIC_BASE", "http://192.168.1.102:8787")
 ANCHOR_KEYS = ("MDrive",)          # 插到这个站点后面
 
 
@@ -227,48 +228,34 @@ def load_base(source: str) -> tuple[dict, str]:
     raise RuntimeError("所有来源都拿不到饭太硬配置")
 
 
-def build_line(host: str, kind: str = "cms") -> dict:
-    """两种线路写法：
+def build_line() -> dict:
+    """4k动漫 线路：type 3 + csp_Anime4KGuard
 
-    cms    —— type 1，苹果CMS：api 指到本机 server.py 的 /api.php/provide/vod/
-              （分类/列表/详情/播放全在服务端算，服务端必须在线）
-    spider —— type 3，csp_Anime4KGuard：跑在我们合并进饭太硬 jar 的那个类里，
-              ext 就写饭太硬自己的网盘配置字段 Cloud-drive，
-              解析/cookie/扫码登录都交给 jar 里饭太硬原生的夸克实现。
+    这个类跑在我们合并进饭太硬 jar 的那个 jar 里：
+      * 目录 -> 我们的静态 anime.json（含封面 + 详情）；
+      * 详情/播放 -> 经 Init.loader() 转发给 jar 里饭太硬原生的夸克实现，
+        cookie 与扫码登录也是同一套（见「🗂我的云盘┃配置」）。
+    Cloud-drive 保持官方占位写法（这个键全线路共用，不乱塞地址）；
+    想免扫码的话，把 "session" 填成返回 {"quarkCookie": ...} 的地址即可。
     """
-    host = host.rstrip("/")
-    if kind == "spider":
-        # 配置 A：解析用饭太硬 jar 自己的夸克实现（csp_Anime4KGuard）。
-        # Cloud-drive 保持官方占位写法（这个键全线路共用，不乱塞地址）；
-        # 想免扫码的话，把 "session" 填成返回 {"quarkCookie": ...} 的地址即可。
-        return {
-            "key": "4k_anime",
-            "name": "🎬4K动漫A┃夸克解析",
-            "type": 3,
-            "api": "csp_Anime4KGuard",
-            "timeout": 30,
-            "searchable": 1,
-            "quickSearch": 1,
-            "changeable": 0,
-            "ext": {
-                "Cloud-drive": "tvfan/Cloud-drive.txt",
-                "data": DATA_BASE + "/anime.json",
-                "data2": gh_wrap(DATA_RAW_RAW),
-            },
-        }
     return {
         "key": "4k_anime",
-        "name": "🎬4K动漫┃夸克",
-        "type": 1,
-        "api": host + "/api.php/provide/vod/",
+        "name": "🎬4K动漫A┃夸克解析",
+        "type": 3,
+        "api": "csp_Anime4KGuard",
+        "timeout": 30,
         "searchable": 1,
         "quickSearch": 1,
-        "filterable": 1,
-        "ext": host + "/api.php/provide/vod/",
+        "changeable": 0,
+        "ext": {
+            "Cloud-drive": "tvfan/Cloud-drive.txt",
+            "data": DATA_BASE + "/anime.json",
+            "data2": gh_wrap(DATA_RAW_RAW),
+        },
     }
 
 
-def merge(cfg: dict, host: str, kind: str = "cms") -> dict:
+def merge(cfg: dict) -> dict:
     sites = list(cfg.get("sites") or [])
     sites = [s for s in sites if s.get("key") != "4k_anime"]      # 幂等：先去掉旧的
     at = 1
@@ -276,7 +263,7 @@ def merge(cfg: dict, host: str, kind: str = "cms") -> dict:
         if s.get("key") in ANCHOR_KEYS:
             at = i + 1
             break
-    sites.insert(at, build_line(host, kind))
+    sites.insert(at, build_line())
     cfg["sites"] = sites
     # `spider` 用**我们的合并 jar**：它就是「官方 jar（loader dex + assets/.so + 加密 guard）
     # + 我们两个类」重建出来的，所以
@@ -284,18 +271,11 @@ def merge(cfg: dict, host: str, kind: str = "cms") -> dict:
     #   - 我们那条线（csp_Anime4KGuard）的类也在同一个 jar 里，不需要站点级 jar。
     # 注意：这个 jar 的地址必须是 github 系地址才能套 gh-proxy（第三方 CDN 套了会拉不到，
     # 那次的代价就是「所有站点分类全没」）。
-    if kind == "spider":
-        cfg["spider"] = jar_spec(MERGED_JAR, "4k_anime_fty_merged.jar")
-        cfg["_说明"] = ("饭太硬官方配置（自动解析） + 4k_anime 线路"
-                        "（插在「我的云盘」之后）")
-        cfg["_4k动漫"] = ("目录来自 " + DATA_BASE + "/anime.json（站点不含解析）；"
-                          "详情/播放经 Init.loader() 转发给 jar 里饭太硬原生的夸克解析"
-                          "（夸克登录见「我的云盘」）。本文件由 src/fetch_fty.py 自动生成。")
-    else:
-        cfg["_说明"] = ("饭太硬官方配置（自动解析） + 4k_anime 线路"
-                        "（插在「我的云盘」之后）")
-        cfg["_4k动漫"] = ("由 huime180/4k_anime 维护：表格定时自动同步 -> anime.json；"
-                          "解析取流由本项目服务提供。本文件由 src/fetch_fty.py 自动生成。")
+    cfg["spider"] = jar_spec(MERGED_JAR, "4k_anime_fty_merged.jar")
+    cfg["_说明"] = "饭太硬官方配置（自动解析） + 4k_anime 线路（插在「我的云盘」之后）"
+    cfg["_4k动漫"] = ("目录来自 " + DATA_BASE + "/anime.json（站点不含解析）；"
+                      "详情/播放经 Init.loader() 转发给 jar 里饭太硬原生的夸克解析"
+                      "（夸克登录见「我的云盘」）。本文件由 src/fetch_fty.py 自动生成。")
     cfg["_generated_at"] = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
     return cfg
 
@@ -303,9 +283,7 @@ def merge(cfg: dict, host: str, kind: str = "cms") -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", default="auto", choices=["auto", "official", "mirror"])
-    ap.add_argument("--host", default=DEFAULT_HOST)
     ap.add_argument("--out", default=OUT)
-    ap.add_argument("--out-spider", default=OUT_SPIDER)
     args = ap.parse_args()
 
     try:
@@ -313,35 +291,28 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         # 兜底：拿本地已有的配置当底稿（里面本来就是饭太硬那套站点，只是我们插过一条线，
         # merge() 会先把旧的那条删掉再插），这样站点抽风时也能把三份配置刷出来
-        base_path = args.out_spider if os.path.exists(args.out_spider) else args.out
-        if not os.path.exists(base_path):
+        if not os.path.exists(args.out):
             print("[fty] ⚠️ 抓取失败（%s），且本地没有可用底稿，保留现有配置" % exc)
             return 0
-        with open(base_path, encoding="utf-8") as fh:
+        with open(args.out, encoding="utf-8") as fh:
             cfg = json.load(fh)
         src = "local(现有配置当底稿，抓取失败: %s)" % exc
         print("[fty] ⚠️ %s" % src)
     before = len(cfg.get("sites") or [])
 
-    outs = []
-    # 只维护两份：spider = 配置 A（csp_Anime4KGuard，推荐）；cms = 旧方案（type 1，需要本机服务）
-    for kind, path in (("cms", args.out), ("spider", args.out_spider)):
-        cfg_v = copy.deepcopy(cfg)
-        merge(cfg_v, args.host, kind)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(cfg_v, fh, ensure_ascii=False, indent=1)
-        outs.append((kind, path, cfg_v))
+    cfg_v = copy.deepcopy(cfg)
+    merge(cfg_v)
+    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    with open(args.out, "w", encoding="utf-8") as fh:
+        json.dump(cfg_v, fh, ensure_ascii=False, indent=1)
 
+    line = [s for s in cfg_v["sites"] if s.get("key") == "4k_anime"][0]
     print("[fty] 来源: %s" % src)
     print("[fty] 站点 %d -> %d，前五个: %s"
-          % (before, len(outs[0][2]["sites"]), [s.get("key") for s in outs[0][2]["sites"][:5]]))
-    for kind, path, cfg_v in outs:
-        line = [s for s in cfg_v["sites"] if s.get("key") == "4k_anime"][0]
-        print("[fty] %-6s api=%-18s -> %s" % (kind, line.get("api"), path))
-        if kind in ("spider", "own"):
-            print("[fty] spider jar: %s" % cfg_v.get("spider"))
-        print("[fty] data: %s" % DATA_BASE)
+          % (before, len(cfg_v["sites"]), [s.get("key") for s in cfg_v["sites"][:5]]))
+    print("[fty] api=%s -> %s" % (line.get("api"), args.out))
+    print("[fty] spider jar: %s" % cfg_v.get("spider"))
+    print("[fty] data: %s" % DATA_BASE)
     return 0
 
 

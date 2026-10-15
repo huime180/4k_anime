@@ -9,7 +9,7 @@ package com.github.catvod.spider;
 // 编译出的调用点描述符是 ()Ljava/lang/ClassLoader;，真机上真实方法是
 // ()Ldalvik/system/DexClassLoader;  ->  NoSuchMethodError。
 //
-// 本桩不会被打进 dex（build_spider.sh 只收集 Anime4KGuard* 与 Quark4K*）。
+// 本桩不会被打进 dex（build_spider.sh 只收集 Anime4KGuard*）。
 public class Init {
     public static dalvik.system.DexClassLoader loader() { return null; }
 }

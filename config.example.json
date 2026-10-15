@@ -1,7 +1,0 @@
-{
-  "_说明": "复制为 config.json 后填写；config.json 已在 .gitignore 中，不会被提交",
-  "_扫码登录": "推荐直接打开 http://你的地址:8787/login 用夸克 App 扫码，Cookie 会自动写进本文件的 quark_cookie",
-  "quark_cookie": "（可在网页扫码后自动填充）形如 __puus=xxxx; __pus=yyyy; ...",
-  "host": "0.0.0.0",
-  "port": 8787
-}

@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""生成 public/index.html —— 本地服务与 GitHub Pages 共用的**同一张**页面。
+"""生成 public/index.html —— 纯静态索引页（GitHub Pages / Cloudflare Pages 共用）
 
-以前两份页面各写各的（server.py 里的 PAGE_TEMPLATE 是本机动态版，
-public/index.html 是手写的 Pages 静态版），所以两边长得不一样。
-现在只有这一个模板：
-  * HTML 完全一致，运行时用 location 判断自己挂在哪；
-  * 去探测同源 /health：通了就是本机解析服务（显示 Cookie 状态 + 扫码登录 + 直连配置地址），
-    不通就是 GitHub Pages（只显示静态索引 + gh-proxy 配置地址）。
+这个站点**不含任何解析功能**：没有服务端、没有 CMS 接口、没有扫码登录，
+只做两件事：浏览表格里的番剧（封面/评分/年份/地区）+ 复制配置地址。
+解析和取流都在影视仓里完成（配置里的 4k动漫 线路转发给 jar 里饭太硬原生的夸克解析）。
 """
 
 from __future__ import annotations
@@ -61,15 +58,13 @@ code{background:var(--card);padding:3px 7px;border-radius:6px;border:1px solid v
 </head>
 <body>
 <header>
-  <h1>🎬 4K动漫 · 夸克接口
-    <span class="tag" id="mode">检测环境…</span>
-    <span class="tag" id="ck"></span>
+  <h1>🎬 4K动漫 · 夸克线路
+    <span class="tag" id="mode">静态索引</span>
   </h1>
   <div class="meta" id="meta">加载中…</div>
   <div class="bar">
     <input id="q" placeholder="搜索番名，例如：孤独摇滚">
     <button id="clear">重置</button>
-    <a class="btn" id="login" style="display:none" href="login">📱 扫码登录夸克</a>
     <button id="reload">🔄 刷新数据</button>
   </div>
   <nav id="nav"></nav>
@@ -82,8 +77,6 @@ code{background:var(--card);padding:3px 7px;border-radius:6px;border:1px solid v
   配置 A 的详情/播放转发给 jar 里饭太硬自己的夸克解析（和玩偶哥哥同一条路），全程在影视仓里跑，<b>不需要</b>任何服务端解析。<br>
   <h3 style="margin-top:14px">配置地址</h3>
   <div class="cfg"><span>配置 A（推荐：转发给 jar 里的夸克解析）</span><code id="cfgA"></code><span class="copy" data-t="cfgA">复制</span></div>
-  <div class="cfg"><span>旧方案（type 1 苹果CMS，需要本机 server.py）</span><code id="cfgC"></code><span class="copy" data-t="cfgC">复制</span></div>
-  <div class="cfg" id="localRow" style="display:none"><span>本机直连配置</span><code id="cfgL"></code><span class="copy" data-t="cfgL">复制</span></div>
   <div class="cfg"><span>本页数据源</span><code id="cfgData"></code></div>
   <p id="hint" style="margin-top:12px"></p>
   <p>数据来自在线表格自动同步；本页只做索引，播放请在影视仓里打开 4k动漫 线路，
@@ -92,9 +85,8 @@ code{background:var(--card);padding:3px 7px;border-radius:6px;border:1px solid v
 <script>
 const DIR = location.origin + location.pathname.replace(/[^/]*$/, '');
 const GH  = 'https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/config/';
-const CFG_A = GH + '4k_anime_with_fty.json';       // 配置 A：csp_Anime4KGuard（饭太硬自己的夸克解析）
-const CFG_C = GH + '4k_anime_with_fty_cms.json';   // 旧方案：type 1，需要本机 server.py
-const state = { anime:null, meta:{}, cat:null, kw:'', live:false };
+const CFG_A = GH + '4k_anime_with_fty.json';       // 唯一的配置：csp_Anime4KGuard（转发给 jar 里饭太硬的夸克解析）
+const state = { anime:null, meta:{}, cat:null, kw:'' };
 
 function normalizeName(s){
   s = String(s||'');
@@ -118,6 +110,7 @@ function card(it){
     <img loading="lazy" src="${esc(picOf(it))}" alt="" onerror="this.src='cover/${esc(it.id)}.png'">
     <div class="t">${esc(it.name)}</div>
     <div class="m"><span>${esc(it.resolution)} · ${esc(it.drive_name)}</span><span>${score}</span></div>
+    <div class="m"><span>${esc(it.vod_year||'')} ${esc(it.vod_area||'')}</span><span>${(m.actor||'').split('、')[0]||''}</span></div>
     <div class="m"><a href="${esc(it.share_url)}" target="_blank" rel="noreferrer">打开网盘</a><span>${esc(it.model)}</span></div>
   </div>`;
 }
@@ -150,34 +143,14 @@ function renderNav(){
   nav.innerHTML = cats.map(c=>`<span class="chip ${(state.cat||'')===c.name?'on':''}" data-cat="${esc(c.name)}">${esc(c.label)} (${c.count})</span>`).join('');
   nav.querySelectorAll('.chip').forEach(el=>el.onclick=()=>{ state.cat = el.dataset.cat || null; renderNav(); render(); });
 }
-async function env(){
-  try{
-    const r = await fetch('health', {cache:'no-store'});
-    if (r.ok){
-      const j = await r.json();
-      if (j && j.ok !== false){
-        state.live = true;
-        document.getElementById('mode').textContent = '本机解析服务 · 在线';
-        document.getElementById('mode').className = 'tag ok';
-        const ck = document.getElementById('ck');
-        if (j.cookie){ ck.textContent = '夸克 Cookie 已配置 ✅'; ck.className = 'tag ok'; }
-        else { ck.innerHTML = '夸克 Cookie 未配置 ⚠️ <a href="login" style="color:var(--warn)">点此扫码登录</a>'; ck.className = 'tag warn'; }
-        document.getElementById('login').style.display = 'inline-block';
-        document.getElementById('cfgL').textContent = DIR + '4k_anime.json';
-        document.getElementById('localRow').style.display = 'flex';
-        document.getElementById('hint').textContent = '本页由本机解析服务提供（可选）；配置 A 的解析在影视仓里跑（转发给 jar 里的夸克解析）。';
-        return;
-      }
-    }
-  }catch(e){}
-  document.getElementById('mode').textContent = 'GitHub Pages · 静态索引';
-  document.getElementById('mode').className = 'tag';
-  document.getElementById('hint').textContent = '当前是 GitHub Pages 上的静态索引：能浏览、能复制配置地址，'
-    + '配置 A 的解析在影视仓里完成（转发给 jar 里的夸克解析），不需要服务端；这里只是索引 + 数据。';
+function env(){
+  document.getElementById('mode').textContent = '静态索引';
+  document.getElementById('hint').textContent = '本站只是索引 + 静态数据（anime.json / meta.json / 封面），'
+    + '不含任何解析：解析与取流都在影视仓里完成（配置里的 4k动漫 线路转发给 jar 里饭太硬原生的夸克解析，'
+    + '夸克登录见「🗂我的云盘┃配置」）。';
 }
 (async function(){
   document.getElementById('cfgA').textContent = CFG_A;
-  document.getElementById('cfgC').textContent = CFG_C;
   document.getElementById('cfgData').textContent = DIR + 'anime.json';
   document.querySelectorAll('.copy').forEach(el=>el.onclick=()=>{
     const t = document.getElementById(el.dataset.t).textContent;
@@ -198,7 +171,9 @@ async function env(){
     state.anime = anime; state.meta = meta || {};
     const withCover = anime.items.filter(it => (state.meta[normalizeName(it.name)]||{}).image).length;
     document.getElementById('meta').innerHTML =
-      `共 <b>${anime.total}</b> 部 ｜ 已有封面 <b>${withCover}</b> ｜ 夸克 <b>${(anime.stat||{})['夸克']||0}</b> ｜ 同步于 ${new Date(anime.synced_at).toLocaleString('zh-CN')}`;
+      `共 <b>${anime.total}</b> 部 ｜ 已有封面 <b>${withCover}</b> ｜ 有详情 `
+      + `<b>${((anime._details||{}).filled)||0}</b> ｜ 夸克 <b>${(anime.stat||{})['夸克']||0}</b> `
+      + `｜ 同步于 ${new Date(anime.synced_at).toLocaleString('zh-CN')}`;
     renderNav(); render();
   }catch(e){
     document.getElementById('status').textContent = '数据加载失败：' + e;
@@ -215,7 +190,7 @@ def main():
     out = os.path.join(PUBLIC_DIR, "index.html")
     with open(out, "w", encoding="utf-8") as fh:
         fh.write(HTML)
-    print("✅ 生成 %s（%d 字节）—— 本机与 Pages 共用同一张页面" % (out, len(HTML.encode("utf-8"))))
+    print("✅ 生成 %s（%d 字节）—— 纯静态索引页，不含解析" % (out, len(HTML.encode("utf-8"))))
 
 
 if __name__ == "__main__":

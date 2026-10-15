@@ -17,6 +17,10 @@ import java.util.Map;
 /**
  * 4K动漫 · 配置 A：**解析全部交给饭太硬 jar 自己那套夸克实现**（配置里写 csp_Anime4KGuard）
  *
+ * 详情页字段（年份 / 地区 / 导演 / 演员 / 简介）优先用我们静态 anime.json 里带的
+ * （由 src/enrich.py 从 Bangumi 补全，构建时写进每个条目）；我们没有的字段
+ * 就从饭太硬那条详情里借，两边都没有才留空。
+ *
  * 目录数据是我们自己的静态 anime.json（可以挂在 Cloudflare Pages，站点本身不含解析）。
  * 详情/播放则直接调用解密 dex 里的 com.github.catvod.spider.Cloud_quark：
  *   * 线路名、播放地址原样透传 -> 就是玩偶哥哥那种
@@ -31,8 +35,7 @@ public class Anime4KGuard extends Spider {
             + "AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/3.14.2 "
             + "Chrome/112.0.5615.165 Electron/24.4.1 Safari/537.36";
 
-    // 目录数据回退链：ext.data / data2 / data3 -> 本机服务(可选) -> GitHub raw
-    private static final String LOCAL_DATA = "http://192.168.1.102:8787/anime.json";
+    // 目录数据回退链：ext.data / data2 / data3 -> GitHub raw（站点只有静态数据，没有服务端）
     private static final String RAW_DATA =
             "https://raw.githubusercontent.com/huime180/4k_anime/main/public/anime.json";
     private final java.util.List<String> extraUrls = new java.util.ArrayList<String>();
@@ -46,6 +49,7 @@ public class Anime4KGuard extends Spider {
     private boolean plainTried = false, sessionTried = false;
     private String realReason = "未尝试";   // 饭太硬原生那条失败的原因（写进详情，方便排查）
     private String dataUrl = "";
+    private J theirsMeta = null;         // 饭太硬那条详情的第一个条目（字段回填用）
 
     private static String dataCache = null;
     private static long dataCacheAt = 0;
@@ -67,7 +71,6 @@ public class Anime4KGuard extends Spider {
             } else if (!extRaw.isEmpty()) {
                 dataUrl = extRaw;
             }
-            extraUrls.add(LOCAL_DATA);
             extraUrls.add(RAW_DATA);
         } catch (Throwable t) {
             // 配置坏了不该让 app 崩
@@ -186,6 +189,7 @@ public class Anime4KGuard extends Spider {
                 + ",\"vod_pic\":" + J.q(it.str("vod_pic"))
                 + ",\"vod_remarks\":" + J.q(it.str("resolution") + " · " + it.str("drive_name"))
                 + ",\"type_name\":" + J.q(it.str("group").isEmpty() ? it.str("category") : it.str("group"))
+                + ",\"vod_year\":" + J.q(it.str("vod_year"))
                 + "}";
     }
 
@@ -212,18 +216,61 @@ public class Anime4KGuard extends Spider {
                         + "。可先到「🗂我的云盘┃配置」里扫码登录夸克，或在 ext 里加 session 地址";
                 return oneItem(item, id, "诊断", "点我看原因$4k:diag", why);
             }
-            return "{\"list\":[{\"vod_id\":\"4k:" + Json.esc(id) + "\""
-                    + ",\"vod_name\":" + J.q(item.str("name"))
-                    + ",\"vod_pic\":" + J.q(item.str("vod_pic"))
-                    + ",\"vod_content\":" + J.q("画质 " + item.str("resolution")
-                        + " ｜ 修复 " + item.str("model")
-                        + " ｜ 解析：饭太硬原生(" + theirs[0].replace("$$$", "/") + ")")
-                    + ",\"vod_play_from\":" + J.q(theirs[0])
-                    + ",\"vod_play_url\":" + J.q(theirs[1])
-                    + "}]}";
+            return detailJson(item, id, theirs);
         } catch (Throwable t) {
             return fail("详情解析失败：" + t);
         }
+    }
+
+    /** 拼详情 JSON：我们的静态数据（Bangumi 补全）优先，缺的字段向饭太硬那条详情借 */
+    String detailJson(J item, String id, String[] theirs) {
+        {
+            String year = pick(item.str("vod_year"), "vod_year");
+            String area = pick(item.str("vod_area"), "vod_area");
+            String director = pick(item.str("vod_director"), "vod_director");
+            String actor = pick(item.str("vod_actor"), "vod_actor");
+            String remarks = pick(item.str("vod_remarks"), "vod_remarks");
+            if (remarks.isEmpty()) remarks = item.str("resolution") + " · " + item.str("drive_name");
+            String typeName = pick(item.str("group"), "type_name");
+            return "{\"list\":[{\"vod_id\":\"4k:" + Json.esc(id) + "\""
+                    + ",\"vod_name\":" + J.q(item.str("name"))
+                    + ",\"vod_pic\":" + J.q(item.str("vod_pic"))
+                    + ",\"vod_year\":" + J.q(year)
+                    + ",\"vod_area\":" + J.q(area)
+                    + ",\"vod_director\":" + J.q(director)
+                    + ",\"vod_actor\":" + J.q(actor)
+                    + ",\"vod_remarks\":" + J.q(remarks)
+                    + ",\"type_name\":" + J.q(typeName)
+                    + ",\"vod_content\":" + J.q(content(item, theirs[0].replace("$$$", "/")))
+                    + ",\"vod_play_from\":" + J.q(theirs[0])
+                    + ",\"vod_play_url\":" + J.q(theirs[1])
+                    + "}]}";
+        }
+    }
+
+    /** 我们没有的详情字段，向饭太硬那条详情借（它有就用它的） */
+    private String pick(String mine, String key) {
+        if (mine != null && !mine.isEmpty()) return mine;
+        if (theirsMeta == null) return "";
+        return theirsMeta.str(key);
+    }
+
+    /** 简介：我们的 Bangumi 简介 + 画质/修复/解析备注（有分享链接也附上） */
+    private String content(J item, String parseFrom) {
+        StringBuilder sb = new StringBuilder();
+        String mine = item.str("vod_content");
+        if (!mine.isEmpty()) {
+            sb.append(mine).append("\n\n");
+        } else if (theirsMeta != null) {
+            String other = theirsMeta.str("vod_content");
+            if (!other.isEmpty()) sb.append(other).append("\n\n");
+        }
+        sb.append("画质 ").append(item.str("resolution"))
+          .append(" ｜ 修复 ").append(item.str("model"))
+          .append(" ｜ 解析：饭太硬原生(").append(parseFrom).append(")");
+        String share = item.str("share_url");
+        if (!share.isEmpty()) sb.append("\n分享链接：").append(share);
+        return sb.toString();
     }
 
     /** 返回单条条目，把原因写进简介（失败时也能在 App 里看到原因） */
@@ -231,6 +278,8 @@ public class Anime4KGuard extends Spider {
         return "{\"list\":[{\"vod_id\":\"4k:" + Json.esc(id) + "\""
                 + ",\"vod_name\":" + J.q("⚠️ " + item.str("name"))
                 + ",\"vod_pic\":" + J.q(item.str("vod_pic"))
+                + ",\"vod_year\":" + J.q(item.str("vod_year"))
+                + ",\"vod_area\":" + J.q(item.str("vod_area"))
                 + ",\"vod_content\":" + J.q(content)
                 + ",\"vod_play_from\":" + J.q(from)
                 + ",\"vod_play_url\":" + J.q(play)
@@ -309,9 +358,11 @@ public class Anime4KGuard extends Spider {
             if (json == null || json.length() < 20) return null;
             List<J> list = J.parse(json).arr("list");
             if (list.isEmpty()) return null;
-            String from = list.get(0).str("vod_play_from");
-            String url = list.get(0).str("vod_play_url");
+            J first = list.get(0);
+            String from = first.str("vod_play_from");
+            String url = first.str("vod_play_url");
             if (from.isEmpty() || url.isEmpty()) return null;
+            theirsMeta = first;          // 留一份：我们没有的详情字段可以向它借
             return new String[]{from, url};
         } catch (Throwable t) {
             return null;

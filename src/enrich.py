@@ -4,7 +4,8 @@
 4k_anime · 元数据补全（封面 / 简介 / 评分）
 ============================================
 用 Bangumi(番组计划) 的公开搜索接口，按中文番名匹配条目，
-取封面图、简介、评分、放送日期，写入 data/meta.json 作为长期缓存。
+取封面图、简介、评分、放送日期，并**补全详情**：
+年份 / 地区 / 导演 / 演员（声优）。写入 data/meta.json 作为长期缓存。
 
 缓存键为归一化后的番名，因此重复运行不会重复请求。
 """
@@ -14,6 +15,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 import urllib.error
@@ -21,7 +24,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from quark import name_score, normalize_name  # noqa: E402
+from names import name_score, normalize_name  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(ROOT, "data")
@@ -29,6 +32,11 @@ ANIME_FILE = os.path.join(DATA_DIR, "anime.json")
 META_FILE = os.path.join(DATA_DIR, "meta.json")
 
 BGM_SEARCH = "https://api.bgm.tv/search/subject/%s"
+BGM_API = "https://api.bgm.tv/v0"
+
+# Bangumi 没有统一的「地区」字段：先看 infobox，再看 tags，最后靠放送电视台兜底
+REGIONS = ("日本", "中国", "美国", "韩国", "中国香港", "中国台湾", "英国", "法国",
+           "德国", "泰国", "印度", "加拿大", "澳大利亚", "意大利", "西班牙", "俄罗斯")
 UA = "dsh-4k-anime/1.0 (https://github.com/huime180/4k_anime)"
 
 # 番名里需要剥掉、但不利于搜索的尾巴
@@ -62,22 +70,50 @@ def query_variants(title):
     return out
 
 
+_PREFER_CURL = [False]      # urllib 一旦被掐断，后面直接走 curl（省一次白等的超时）
+
+
+def _fetch_json(url, timeout=30):
+    """取 JSON：先 urllib；被掐断就退到系统 curl（有就试）
+
+    实测：某些网络/设备上 api.bgm.tv 的 HTTPS 响应会被 CDN 中途掐断
+    （IncompleteRead / RemoteDisconnected，Python 的 HTTPS 栈几乎必失败），
+    但同一台机器上 curl 稳定成功。CI 里 urllib 正常，走不到 curl 这一步。
+    """
+    if not _PREFER_CURL[0]:
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": UA, "Accept": "application/json",
+                "Accept-Encoding": "identity"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8", "replace"))
+        except Exception:  # noqa: BLE001
+            _PREFER_CURL[0] = True      # 这个网络下 Python 的 HTTPS 栈不可用，别再试
+
+    curl = shutil.which("curl")
+    if not curl:
+        return None
+    try:
+        out = subprocess.run(
+            [curl, "-sS", "--http1.1", "-m", str(timeout),
+             "-H", "User-Agent: " + UA, "-H", "Accept: application/json", url],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout + 10)
+        if out.returncode == 0 and out.stdout:
+            return json.loads(out.stdout.decode("utf-8", "replace"))
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def bgm_search(keyword, retries=3):
     url = (BGM_SEARCH % urllib.parse.quote(keyword)) + "?" + urllib.parse.urlencode(
         {"type": 2, "responseGroup": "large", "max_results": 5}
     )
     for attempt in range(retries):
-        req = urllib.request.Request(url, headers={"User-Agent": UA})
-        try:
-            with urllib.request.urlopen(req, timeout=25) as resp:
-                return json.loads(resp.read().decode("utf-8", "replace"))
-        except urllib.error.HTTPError as exc:
-            if exc.code in (429, 500, 502, 503):
-                time.sleep(2.0 * (attempt + 1))
-                continue
-            return {}
-        except Exception:
-            time.sleep(1.5 * (attempt + 1))
+        got = _fetch_json(url, timeout=25)
+        if got is not None:
+            return got
+        time.sleep(1.5 * (attempt + 1))
     return {}
 
 
@@ -100,8 +136,91 @@ def _reachable(url):
                .replace("https://lain.bgm.tv", "https://bgm.tv"))
 
 
-def resolve(title):
-    """返回一条元数据字典，或 None"""
+def bgm_get(path, retries=4):
+    """调 Bangumi v0 接口（429/5xx/连接中断都退避重试）
+
+    不开 gzip：部分网络下分块响应会被中途掐断（IncompleteRead），重试多半能成。
+    """
+    url = BGM_API + path
+    for attempt in range(retries):
+        got = _fetch_json(url, timeout=30)
+        if got is not None:
+            return got
+        time.sleep(1.2 * (attempt + 1))
+    print("    · v0 接口失败 %s（重试 %d 次）" % (path, retries))
+    return {}
+
+
+def infobox_map(detail):
+    """把 infobox 拍平成 key -> 字符串"""
+    out = {}
+    for it in (detail or {}).get("infobox") or []:
+        value = it.get("value")
+        if isinstance(value, list):
+            value = "、".join(str(x.get("v") if isinstance(x, dict) else x) for x in value)
+        out[str(it.get("key") or "").strip()] = str(value or "").strip()
+    return out
+
+
+def pick_area(info, detail):
+    for key in ("地区", "国家", "国家/地区", "制作国家"):
+        if info.get(key):
+            return info[key]
+    for tag in (detail or {}).get("tags") or []:
+        name = str(tag.get("name") or "")
+        if name in REGIONS:
+            return name
+    if info.get("放送电视台") or info.get("播放电视台") or info.get("其他电视台"):
+        return "日本"
+    return ""
+
+
+def pick_director(info, persons_list):
+    exact = ("导演", "总导演", "监督", "系列监督", "动画导演", "副导演")
+    for rel in exact:
+        for p in persons_list or []:
+            if str(p.get("relation") or "").strip() == rel:
+                return str(p.get("name") or "")
+    for p in persons_list or []:
+        rel = str(p.get("relation") or "")
+        if "导演" in rel or "监督" in rel:
+            return str(p.get("name") or "")
+    return info.get("导演") or info.get("监督") or ""
+
+
+def pick_actors(chars, limit=12):
+    names = []
+    for c in chars or []:
+        for a in c.get("actors") or []:
+            nm = str(a.get("name") or "").strip()
+            if nm and nm not in names:
+                names.append(nm)
+        if len(names) >= limit:
+            break
+    return "、".join(names[:limit])
+
+
+def details_of(bgm_id):
+    """详情四件套：年份 / 地区 / 导演 / 演员（details=True 表示这一轮已经问过了）"""
+    out = {"year": "", "area": "", "director": "", "actor": "", "details": True}
+    if not bgm_id:
+        return out
+    detail = bgm_get("/subjects/%s" % bgm_id)
+    info = infobox_map(detail)
+    persons_list = bgm_get("/subjects/%s/persons" % bgm_id)
+    chars = bgm_get("/subjects/%s/characters" % bgm_id)
+    date = str((detail or {}).get("date") or "")
+    out["year"] = (date or "")[:4]
+    out["area"] = pick_area(info, detail)
+    out["director"] = pick_director(
+        info, persons_list if isinstance(persons_list, list) else [])
+    ac = chars if isinstance(chars, list) else []
+    out["actor"] = pick_actors(ac)
+    return out
+
+
+def resolve(title, want_details=True):
+    """返回一条元数据字典，或 None；want_details=False 时只补封面/简介（快）"""
     for keyword in query_variants(title):
         payload = bgm_search(keyword)
         if not payload.get("list"):
@@ -113,6 +232,7 @@ def resolve(title):
             rating = cand.get("rating") or {}
             # lain.bgm.tv 在部分网络下不可达，改走主站域名（实测 20/20 可取）
             images = {k: _reachable(v) for k, v in images.items()}
+            extra = details_of(cand.get("id")) if want_details else {}
             return {
                 "bgm_id": cand.get("id"),
                 "bgm_name": cand.get("name") or "",
@@ -123,6 +243,11 @@ def resolve(title):
                 "score": rating.get("score"),
                 "rank": rating.get("rank"),
                 "date": cand.get("air_date") or "",
+                "year": extra.get("year") or (cand.get("air_date") or "")[:4],
+                "area": extra.get("area", ""),
+                "director": extra.get("director", ""),
+                "actor": extra.get("actor", ""),
+                "details": bool(extra.get("details")),
                 "match": round(score, 3),
                 "keyword": keyword,
             }
@@ -156,7 +281,21 @@ def main():
             continue
         keys.setdefault(key, item["name"])
 
-    todo = [k for k in keys if not (only_missing and meta.get(k))]
+    def done(k):
+        """封面 + 详情都拿过才算补全（details 标记见 details_of）"""
+        e = meta.get(k) or {}
+        if e.get("miss"):
+            return True                      # 没匹配上的别反复试
+        if not e.get("image"):
+            return False
+        return bool(e.get("details")) or not e.get("bgm_id")
+
+    def only_details(k):
+        """已经匹配到番组、只差详情（年份/地区/导演/演员）"""
+        e = meta.get(k) or {}
+        return bool(e.get("bgm_id")) and not e.get("details")
+
+    todo = [k for k in keys if not (only_missing and done(k))]
     if limit:
         todo = todo[:limit]
     print("[enrich] 待补全 %d / 共 %d 个番名" % (len(todo), len(keys)))
@@ -164,6 +303,26 @@ def main():
     hit = 0
     for idx, key in enumerate(todo, 1):
         title = keys[key]
+        # 快路径：番组已确定，只补详情（省掉一次搜索，重跑时不会重复下载封面/简介）
+        if only_details(key):
+            entry = dict(meta[key])
+            try:
+                extra = details_of(entry["bgm_id"])
+            except Exception as exc:  # noqa: BLE001
+                print("  [%d/%d] %s -> 详情异常 %s" % (idx, len(todo), title[:24], exc))
+                extra = {"details": True}
+            entry.update(extra)
+            entry.setdefault("year", (entry.get("date") or "")[:4])
+            meta[key] = entry
+            fresh[key] = entry
+            hit += 1
+            print("  [%d/%d] %-28s -> 详情 %s / %s / %s" % (
+                idx, len(todo), title[:28], entry.get("year") or "-",
+                entry.get("area") or "-", (entry.get("director") or "-")[:12]))
+            if idx % 25 == 0:
+                _save(meta)
+            time.sleep(0.3)
+            continue
         try:
             found = resolve(title)
         except Exception as exc:  # noqa: BLE001
