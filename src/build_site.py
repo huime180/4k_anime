@@ -157,6 +157,27 @@ def main() -> int:
                % "".join(card(i, meta) for i in pick)))
     write(os.path.join(SITE_DIR, "style.css"), CSS)
 
+    # 官方 csp_WoGGGuard 的**分类是写死在 jar 里的**（1电影/2剧集/44臻彩/6短漫剧/
+    # 3动漫/4综艺/46纪录片/5音乐），它只会拿这些 id 来请求 vodshow/。所以这 8 个 id
+    # 必须有页面（没有就是空白/404），这里把它们映射到我们的数据上。
+    def by_rule(rule):
+        if rule is None:
+            return items
+        return [it for it in items if rule(it)] or items      # 兜底给全部，宁可多不可空
+
+    wogg_tabs = {
+        "1": lambda it: any(k in str(it.get("category", "")) + str(it.get("group", "")) + str(it.get("name", ""))
+                            for k in ("剧场", "电影", "映画")),
+        "2": lambda it: any(k in str(it.get("category", "")) + str(it.get("group", ""))
+                            for k in ("季", "合集", "TV")),
+        "44": lambda it: "4K" in str(it.get("resolution", "")).upper(),
+        "6": lambda it: any(k in str(it.get("name", "")) + str(it.get("category", "")) for k in ("短", "漫剧")),
+        "3": None,      # 动漫 = 全部
+        "4": None,      # 综艺（我们没有这类，兜底全部）
+        "46": None,     # 纪录片（同上）
+        "5": None,      # 音乐（同上）
+    }
+
     # 分类页：两种横线形态都生成（分页参数可能为空、也可能是 1..N）
     for c in classes:
         cid = str(c.get("type_id"))
@@ -169,6 +190,18 @@ def main() -> int:
             write(os.path.join(SITE_DIR, "vodshow", "%s-------%d---.html" % (cid, p)), text)
             if p == 1:
                 # 分页参数为空时 jar 请求的是 11 个横线那一版
+                write(os.path.join(SITE_DIR, "vodshow", "%s-----------.html" % cid), text)
+
+    # 官方分类 id（写死在 csp_WoGGGuard 里）也要有页面
+    for cid, rule in wogg_tabs.items():
+        rows = by_rule(rule)
+        pages = max(1, (len(rows) + PER_PAGE - 1) // PER_PAGE)
+        for p in range(1, pages + 1):
+            chunk = rows[(p - 1) * PER_PAGE: p * PER_PAGE]
+            body = '<div class="module-lines-list"><div class="grid">%s</div></div>' % "".join(card(i, meta) for i in chunk)
+            text = page("分类 " + cid, body)
+            write(os.path.join(SITE_DIR, "vodshow", "%s-------%d---.html" % (cid, p)), text)
+            if p == 1:
                 write(os.path.join(SITE_DIR, "vodshow", "%s-----------.html" % cid), text)
 
     # 详情页：播放链接写在 div.module-row-info > a 的 data-clipboard-text 里

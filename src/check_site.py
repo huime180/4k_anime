@@ -56,6 +56,11 @@ def main() -> int:
         t = read(p)
         n = len(re.findall(r'<div class="module-item">', t))
         ok &= need(n >= 1, "分类页 %s 有 %d 张卡片（div.module-item）" % (name, n))
+    # 官方 csp_WoGGGuard 写死的分类 id，一个都不能缺
+    for cid in ("1", "2", "44", "6", "3", "4", "46", "5"):
+        p2 = os.path.join(SITE, "vodshow", "%s-----------.html" % cid)
+        n2 = len(re.findall(r'<div class="module-item">', read(p2))) if os.path.exists(p2) else -1
+        ok &= need(n2 >= 1, "官方分类 id %s 的页面有 %d 张卡片" % (cid, n2))
     listed = sorted(glob.glob(os.path.join(SITE, "vodshow", "*.html")))
     ok &= need(len(listed) >= 20, "分类页共 %d 个（含分页）" % len(listed))
 
