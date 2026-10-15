@@ -45,6 +45,26 @@ GH = "https://gh-proxy.com/"
 DATA_RAW = GH + RAW_BASE + "/public/anime.json"
 MERGED_JAR = GH + RAW_BASE + "/jar/4k_anime_fty_merged.jar"
 ONLY_JAR = GH + RAW_BASE + "/jar/4k_anime_only.jar"           # 只含我们两个类的小 jar（诊断用）
+UPSTREAM_INFO = os.path.join(ROOT, "data", "upstream.json")   # 上游官方 jar 的地址+md5
+
+
+def official_jar() -> str:
+    """官方 jar 的地址（`spider` 字段用）——和官方配置一样形如 `地址;md5;xx`，外面套 gh-proxy。
+
+    官方 55 条线路全都依赖这个 jar（loader dex + assets/*.so + 加密 guard），
+    所以我们**不再用自己的合并 jar 去顶替它**：一条官方线路都不动，
+    我们那条线改用自己的 jar（见 build_line 里的 "jar" 字段）。
+    """
+    try:
+        with open(UPSTREAM_INFO, encoding="utf-8") as fh:
+            info = json.load(fh)
+        url, md5 = str(info.get("url", "")), str(info.get("md5", ""))
+        if url:
+            spec = url + (";md5;" + md5 if md5 else "")
+            return spec if spec.startswith(GH) else GH + spec      # 官方也套 gh-proxy
+    except (OSError, ValueError):
+        pass
+    return GH + "https://raw.githubusercontent.com/youhunwl/TVBox/master/jar/饭太硬.jar"
 OUT_MIN = os.path.join(ROOT, "config", "4k_anime_min.json")   # 最小诊断配置
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -182,6 +202,8 @@ def build_line(host: str, kind: str = "cms") -> dict:
             "name": "🎬4K动漫┃夸克",
             "type": 3,
             "api": "csp_Anime4KGuard",
+            "timeout": 30,
+            "jar": MERGED_JAR,     # 只给这一条线用的 jar：官方 jar 仍归其它线路使用
             "searchable": 1,
             "quickSearch": 1,
             "changeable": 0,
@@ -200,6 +222,8 @@ def build_line(host: str, kind: str = "cms") -> dict:
             "name": "🎬4K动漫┃夸克(自带)",
             "type": 3,
             "api": "csp_Quark4K",
+            "timeout": 30,
+            "jar": ONLY_JAR,       # 自带解析不依赖饭太硬的 loader/guard，用只有我们类的小 jar
             "searchable": 1,
             "quickSearch": 1,
             "changeable": 0,
@@ -231,15 +255,16 @@ def merge(cfg: dict, host: str, kind: str = "cms") -> dict:
             break
     sites.insert(at, build_line(host, kind))
     cfg["sites"] = sites
+    # `spider` 一律保持**官方 jar**：官方 46 条 csp_*Guard 全依赖它，换了它一旦加载失败
+    # 所有官方线路会一起消失（用户遇到的「线路都识别不到」）。我们那条线用自己的 jar，
+    # 写在站点自己的 "jar" 字段里（TVBox/影视仓 的站点级 jar）。
+    cfg["spider"] = official_jar()
     if kind in ("spider", "own"):
-        cfg["spider"] = MERGED_JAR        # 必须用我们合并过的 jar：里面有 csp_Anime4KGuard / csp_Quark4K
-    elif str(cfg.get("spider", "")).startswith("https://raw.githubusercontent.com/"):
-        # cms 那份保持官方 jar，但同样套一层 gh-proxy（官方配置就是这么写的）
-        cfg["spider"] = GH + cfg["spider"]
-        cfg["_说明"] = ("饭太硬官方配置（自动解析） + 4k_anime 线路（csp_Anime4KGuard，"
-                        "插在「我的云盘」之后）")
+        cfg["_说明"] = ("饭太硬官方配置（自动解析） + 4k_anime 线路"
+                        "（插在「我的云盘」之后，自带 jar 字段）")
         cfg["_4k动漫"] = ("目录来自 " + DATA_BASE + "/anime.json（站点不含解析）；"
-                          "详情/播放直接调用 jar 里饭太硬原生的夸克解析（夸克登录见「我的云盘」）。"
+                          "详情/播放直接调用饭太硬原生的夸克解析（夸克登录见「我的云盘」）。"
+                          "本条目自带 jar 字段，spider 保持官方 jar 不动。"
                           "本文件由 src/fetch_fty.py 自动生成。")
     else:
         cfg["_说明"] = ("饭太硬官方配置（自动解析） + 4k_anime 线路"

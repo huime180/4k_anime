@@ -1,5 +1,5 @@
 {
- "spider": "https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/jar/4k_anime_fty_merged.jar",
+ "spider": "https://gh-proxy.com/https://xiuxiu-pro-new.meitudata.com/posters/3c60a3e44d582b5a74fdcab19a150ad5.jpg;md5;aa8d37525617af470b3b8dfc91db8669",
  "wallpaper": "https://动态壁纸.饭.eu.org/",
  "sites": [
   {
@@ -32,6 +32,8 @@
    "name": "🎬4K动漫┃夸克(自带)",
    "type": 3,
    "api": "csp_Quark4K",
+   "timeout": 30,
+   "jar": "https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/jar/4k_anime_only.jar",
    "searchable": 1,
    "quickSearch": 1,
    "changeable": 0,
@@ -702,7 +704,7 @@
    "ua": "okHttp/Mod-1.5.0.0"
   }
  ],
- "_说明": "饭太硬官方配置（自动解析） + 4k_anime 线路（csp_Anime4KGuard，插在「我的云盘」之后）",
- "_4k动漫": "目录来自 https://huime180.github.io/4k_anime/anime.json（站点不含解析）；详情/播放直接调用 jar 里饭太硬原生的夸克解析（夸克登录见「我的云盘」）。本文件由 src/fetch_fty.py 自动生成。",
- "_generated_at": "2026-10-15 16:14:05 UTC"
+ "_说明": "饭太硬官方配置（自动解析） + 4k_anime 线路（插在「我的云盘」之后，自带 jar 字段）",
+ "_4k动漫": "目录来自 https://huime180.github.io/4k_anime/anime.json（站点不含解析）；详情/播放直接调用饭太硬原生的夸克解析（夸克登录见「我的云盘」）。本条目自带 jar 字段，spider 保持官方 jar 不动。本文件由 src/fetch_fty.py 自动生成。",
+ "_generated_at": "2026-10-15 16:16:46 UTC"
 }

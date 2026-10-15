@@ -7,6 +7,8 @@
    "name": "🎬4K动漫┃夸克(自带)",
    "type": 3,
    "api": "csp_Quark4K",
+   "timeout": 30,
+   "jar": "https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/jar/4k_anime_only.jar",
    "searchable": 1,
    "quickSearch": 1,
    "changeable": 0,
