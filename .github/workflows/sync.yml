@@ -61,6 +61,12 @@ jobs:
           python3 src/fetch_fty.py --host "${PUBLIC_BASE:-http://192.168.1.102:8787}"
 
 
+      - name: 生成「玩偶哥哥式」静态数据站（官方 csp_WoGGGuard 线路与本地 siteUrl 都能用）
+        run: python3 src/build_site.py
+
+      - name: 数据站契约自检
+        run: python3 src/check_site.py
+
       - name: 生成 TVBox 配置与静态页面
         env:
           PUBLIC_BASE: ${{ vars.PUBLIC_BASE }}

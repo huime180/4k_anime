@@ -467,6 +467,8 @@ class Handler(BaseHTTPRequestHandler):
             if path in ("/api.php/provide/vod", "/api.php/provide/vod/index.php",
                         "/vod", "/api.php/provide/vod/"):
                 return self.cms(query)
+            if self.static(path):
+                return
             if path.startswith("/spider/"):
                 return self.spider(path[len("/spider/"):], query)
             if path == "/play":
@@ -858,6 +860,42 @@ class Handler(BaseHTTPRequestHandler):
                 .replace("{{NAV}}", nav)
                 .replace("{{CARDS}}", "".join(cards)))
         self.send_bytes(html.encode("utf-8"), "text/html; charset=utf-8")
+
+    STATIC_TYPES = {
+        ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+        ".js": "application/javascript; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".webp": "image/webp", ".svg": "image/svg+xml", ".ico": "image/x-icon",
+        ".txt": "text/plain; charset=utf-8", ".xml": "application/xml; charset=utf-8",
+    }
+
+    def static(self, path):
+        """把 public/ 当静态目录发（公开的玩偶式数据站 /tvfan/… 走这里）。
+
+        以前本地只有 /anime.json /meta.json /cover/ 这几个写死的路由，
+        public/tvfan/ 这类目录在本机是 404（{"error":"not found","path":"/tvfan"}）——
+        ext.siteUrl 指向本机时就会「站点打不开」。
+        """
+        base = os.path.join(ROOT, "public")
+        rel = path.lstrip("/")
+        target = os.path.normpath(os.path.join(base, rel))
+        if target != base and not target.startswith(base + os.sep):
+            return False                       # 防目录穿越
+        if os.path.isdir(target):
+            target = os.path.join(target, "index.html")
+        if not os.path.isfile(target):
+            return False
+        ctype = self.STATIC_TYPES.get(os.path.splitext(target)[1].lower())
+        if not ctype:
+            return False
+        try:
+            with open(target, "rb") as fh:
+                body = fh.read()
+        except OSError:
+            return False
+        self.send_bytes(body, ctype, extra={"Cache-Control": "public, max-age=60"})
+        return True
 
     def cover(self, filename):
         item_id = filename.split(".")[0]
