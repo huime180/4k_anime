@@ -34,6 +34,10 @@ jobs:
       - name: 同步在线表格
         run: python3 src/sync_table.py
 
+      - name: 合集条目改指二级目录（匿名列夸克目录，不涉及解析）
+        run: python3 src/subfolder.py
+        continue-on-error: true
+
       - name: 补全封面与详情（Bangumi：年份/地区/导演/演员/简介）
         run: python3 src/enrich.py --jobs 4
         continue-on-error: true

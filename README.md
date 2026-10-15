@@ -79,7 +79,30 @@ https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/co
 
 ---
 
-## 三、数据站（只放数据，不含解析）
+## 三、合集分享：条目改指「二级目录」
+
+「每周更新」是**一季一个大文件夹**：一个夸克分享里塞着几十部番
+（10 个分享装了 216 条条目，比如 `264977a28fdd` 一个分享 26 部）。
+表格里每行的链接都指向**整个分享**，所以点开哪一部看到的都是整季混在一起的剧集。
+
+`src/subfolder.py` 在同步之后跑一次，**只干一件事**：匿名列一次目录
+（申请分享令牌 + 列目录都不需要登录，纯数据、不涉及解析），
+把每个条目对应的**二级目录**（分享根 → 季度合集 → **番剧目录**）拼进链接：
+
+```
+https://pan.quark.cn/s/<pwd>#/list/share/<二级目录的 fid>
+```
+
+再往下（三级目录 = 同一部的分季/分 Part）**不再细分**：同一系列放一起就行。
+匹配用「表格名 + Bangumi 别名 + 季数」，别名让「一拳超人」能对上目录里的
+`240.One-Punch Man`；认不出来就保持原链接（整季列出），不会乱指。
+
+实测（当前表格 216 条合集条目）：**203 条改指成功**，13 条在它自己的分享里
+确实没有这部（表格里同一部番在多个月份重复出现、旧行的链接没跟着改），保持原样。
+
+---
+
+## 四、数据站（只放数据，不含解析）
 
 `public/` 就是数据站根目录：`anime.json` / `meta.json` / `cover/*.png` / `index.html`。
 
@@ -90,7 +113,7 @@ https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/co
 
 ---
 
-## 四、jar（`jar/4k_anime_fty_merged.jar`）
+## 五、jar（`jar/4k_anime_fty_merged.jar`）
 
 饭太硬官方 jar（其 `spider` 字段伪装成 `.jpg`，带 `;md5;` 校验）+ 我们自己的类：
 
@@ -107,30 +130,32 @@ https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/co
 
 ---
 
-## 五、自动同步
+## 六、自动同步
 
 `.github/workflows/sync.yml`，`cron: "0 4 * * 1"`（每周一 04:00 UTC / 北京 12:00）：
 
 1. `src/sync_table.py` —— 在线表格 → `data/anime.json`
-2. `src/enrich.py` —— Bangumi 封面 + 详情 → `data/meta.json`
-3. `src/fetch_upstream_jar.py` + `build_spider.sh` —— 跟随官方 jar 重建合并 jar
-4. `src/fetch_fty.py` —— 抓饭太硬官方配置、插入 `4k_anime` 线路 → `config/4k_anime_with_fty.json`
-5. `src/export_data.py` —— 封面 + 详情注入 `anime.json`，导出到 `public/`
-6. `src/build_web.py` + `src/check_config.py` —— 生成索引页、校验配置里的 `csp_X` 在 jar 里都有
-7. 有变化就 `git commit` 回仓库，并重新发布 Pages
+2. `src/subfolder.py` —— 合集条目改指「二级目录」（匿名列一次夸克目录）
+3. `src/enrich.py` —— Bangumi 封面 + 详情 + 别名 → `data/meta.json`
+4. `src/fetch_upstream_jar.py` + `build_spider.sh` —— 跟随官方 jar 重建合并 jar
+5. `src/fetch_fty.py` —— 抓饭太硬官方配置、插入 `4k_anime` 线路 → `config/4k_anime_with_fty.json`
+6. `src/export_data.py` —— 封面 + 详情注入 `anime.json`，导出到 `public/`
+7. `src/build_web.py` + `src/check_config.py` —— 生成索引页、校验配置里的 `csp_X` 在 jar 里都有
+8. 有变化就 `git commit` 回仓库，并重新发布 Pages
 
 想更勤快就把 cron 改成 `"0 */6 * * *"`（每 6 小时）。
 把数据站搬到 Cloudflare Pages 时，仓库 **Settings → Variables → `DATA_BASE`** 设成 `https://<项目>.pages.dev` 即可。
 
 ---
 
-## 六、本地跑一遍
+## 七、本地跑一遍
 
 ```bash
 git clone https://github.com/huime180/4k_anime.git
 cd 4k_anime
 
 python3 src/sync_table.py        # 表格 → data/anime.json
+python3 src/subfolder.py         # 合集条目改指二级目录（要联网列夸克目录，可跳过）
 python3 src/enrich.py            # 封面 + 详情 → data/meta.json（首次较慢，支持 --limit N）
 python3 src/export_data.py       # 注入封面/详情 → public/anime.json
 python3 src/build_web.py         # 生成 public/index.html
@@ -152,7 +177,7 @@ JDK=work/tools/jdk/data/data/com.termux/files/usr/lib/jvm/java-21-openjdk   # �
 
 ---
 
-## 七、数据来源与实测记录
+## 八、数据来源与实测记录
 
 ### 表格结构
 
@@ -207,7 +232,7 @@ Bangumi 返回的封面在 `lain.bgm.tv`，实测这个**图片 CDN 在部分网
 
 ---
 
-## 八、目录结构
+## 九、目录结构
 
 ```
 4k_anime/
@@ -232,7 +257,7 @@ Bangumi 返回的封面在 `lain.bgm.tv`，实测这个**图片 CDN 在部分网
 
 ---
 
-## 九、免责声明
+## 十、免责声明
 
 * 本项目**只是索引工具**，不存储、不分发、不转码任何视频文件；所有视频都在第三方网盘上。
 * 表格中的资源由第三方整理分享，**其内容与版权状况本项目无法核实**。请仅将本项目用于
@@ -240,6 +265,6 @@ Bangumi 返回的封面在 `lain.bgm.tv`，实测这个**图片 CDN 在部分网
 * 把表格内容再公开分发可能与原表格「禁止二次传播」的说明相冲突，请自行评估。
 * 夸克会话由影视仓里的饭太硬实现持有，请自行承担账号风险。
 
-## 十、许可
+## 十一、许可
 
 MIT（仅覆盖本项目代码，不覆盖任何第三方资源）

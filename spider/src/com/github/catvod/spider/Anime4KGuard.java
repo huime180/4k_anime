@@ -208,7 +208,11 @@ public class Anime4KGuard extends Spider {
                         "该条目不是夸克分享（网盘：" + item.str("drive_name") + "），这条线只吃夸克分享");
             }
 
-            String[] theirs = realDetail(pwd, item.str("name"));
+            // 链接优先用条目里的 share_url：合集条目在同步时已经改指到「二级目录」
+            // （https://pan.quark.cn/s/<pwd>#/list/share/<fid>），这样只会列这一部番
+            String shareUrl = item.str("share_url");
+            if (shareUrl.isEmpty()) shareUrl = "https://pan.quark.cn/s/" + pwd;
+            String[] theirs = realDetail2(shareUrl, item.str("name"));
             if (theirs == null) {
                 // 失败也返回一条「诊断条目」：原因写在简介里，App 里能直接看到
                 // （否则 list 为空，客户端只显示「视频线路加载失败」，什么都查不到）
@@ -324,9 +328,8 @@ public class Anime4KGuard extends Spider {
         }
     }
 
-    private String[] detailOf(Spider rq, String pwd, String name) {
+    private String[] detailOf(Spider rq, String share, String name) {
         if (rq == null) return null;
-        String share = "https://pan.quark.cn/s/" + pwd;
         try {
             // 第一条路：它的 detailContent（内部剧名传空）
             String json = rq.detailContent(java.util.Arrays.asList(share));
@@ -379,17 +382,22 @@ public class Anime4KGuard extends Spider {
      * 拿不到才用 ext.session 补一次。
      */
     private String[] realDetail(String pwd, String name) {
+        return realDetail2("https://pan.quark.cn/s/" + pwd, name);
+    }
+
+    /** 同 realDetail，但直接给完整分享链接（合集条目带 #/list/share/<fid>） */
+    private String[] realDetail2(String share, String name) {
         if (!plainTried) {
             plainTried = true;
             realPlain = build(extRaw.isEmpty() ? "{}" : extRaw);
         }
-        String[] r = detailOf(realPlain, pwd, name);
+        String[] r = detailOf(realPlain, share, name);
         if (r != null) { realQuark = realPlain; return r; }
 
         if (!sessionUrl.isEmpty() && !sessionTried) {
             sessionTried = true;
             realSession = build("{\"Cloud-drive\":" + J.q(sessionUrl) + "}");
-            r = detailOf(realSession, pwd, name);
+            r = detailOf(realSession, share, name);
             if (r != null) {
                 realQuark = realSession;
                 realReason = "配置里没有会话，用了 ext.session";

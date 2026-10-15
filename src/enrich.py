@@ -218,7 +218,7 @@ def details_of(bgm_id):
     被 CDN 掐断的那次不算数，下一轮还会重试，否则一次网络抖动就把这部的
     导演/演员永久留空了。
     """
-    out = {"year": "", "area": "", "director": "", "actor": "",
+    out = {"year": "", "area": "", "director": "", "actor": "", "aliases": "",
            "details": False, "no_cast": False}
     if not bgm_id:
         return out
@@ -226,6 +226,19 @@ def details_of(bgm_id):
     info = infobox_map(detail)
     persons_list = bgm_get("/subjects/%s/persons" % bgm_id)
     chars = bgm_get("/subjects/%s/characters" % bgm_id)
+
+    # 别名：找二级目录时非常有用（目录常写成英文/日文原名，比如「One-Punch Man」「氷の城壁」）
+    names = []
+    for key in ("别名", "別名", "其他译名", "其它译名", "英文名", "罗马字"):
+        for piece in re.split(r"[、,，/／|]", info.get(key) or ""):
+            piece = piece.strip()
+            if piece and piece not in names:
+                names.append(piece)
+    for piece in ((detail or {}).get("name"), (detail or {}).get("name_cn")):
+        piece = (piece or "").strip()
+        if piece and piece not in names:
+            names.append(piece)
+    out["aliases"] = "、".join(names[:12])
 
     date = str((detail or {}).get("date") or "") if isinstance(detail, dict) else ""
     out["year"] = date[:4]
@@ -274,6 +287,7 @@ def resolve(title, want_details=True):
                 "area": extra.get("area", ""),
                 "director": extra.get("director", ""),
                 "actor": extra.get("actor", ""),
+                "aliases": extra.get("aliases", ""),
                 "details": bool(extra.get("details")),
                 "match": round(score, 3),
                 "keyword": keyword,
@@ -317,8 +331,8 @@ def main():
             return False
         if not e.get("bgm_id"):
             return True
-        if not e.get("details"):
-            return False
+        if not e.get("details") or "aliases" not in e:
+            return False                       # 别名是后来才加的字段，老缓存要补一次
         # 拿到过详情，但演员是空的、而且这次不是「本来就没有声优」-> 值得再试一次
         return bool(e.get("actor")) or bool(e.get("no_cast"))
 
