@@ -314,26 +314,29 @@ public class Anime4KGuard extends Spider {
             String[] theirs = realDetail(pwd);
             String from = theirs != null ? theirs[0] : "";
             String url = theirs != null ? theirs[1] : "";
+            String nativeFrom = from;                // 饭太硬自己的名字（夸父原/夸父智），必须原样保留
             String src;
             if (!from.isEmpty() && !mineFrom.isEmpty()) {
                 from = from + "$$$" + mineFrom;      // 两套都给：原生优先，自带兜底
                 url = url + "$$$" + mineUrl;
-                src = "饭太硬原生 + 自带";
+                src = "饭太硬原生(" + nativeFrom + ") + 自带";
             } else if (!from.isEmpty()) {
-                src = "饭太硬原生";
+                src = "仅饭太硬原生(" + nativeFrom + ")";   // 自带没枚举出来，播不了就只能去「我的云盘」登录
             } else if (!mineFrom.isEmpty()) {
                 from = mineFrom;
                 url = mineUrl;
-                src = "自带（饭太硬原生不可用：" + realReason + "）";
+                src = "仅自带（饭太硬原生不可用：" + realReason + "）";
             } else {
-                return fail("没有找到可播放的文件（" + realReason + "）");
+                return fail("两套解析都没出播放列表（饭太硬：" + realReason + "；自带：没找到视频文件）");
             }
+            // 把分开的线路名写进简介，方便一眼看到 app 里到底给了几条
+            String fromList = from.replace("$$$", " / ");
             return "{\"list\":[{\"vod_id\":\"4k:" + Json.esc(id) + "\""
                     + ",\"vod_name\":" + J.q(item.str("name"))
                     + ",\"vod_pic\":" + J.q(item.str("vod_pic"))
                     + ",\"vod_content\":" + J.q("画质 " + item.str("resolution")
                         + " ｜ 修复 " + item.str("model") + " ｜ 共 " + eps.size() + " 集"
-                        + " ｜ 解析：" + src)
+                        + " ｜ 解析：" + src + " ｜ 线路：" + fromList)
                     + ",\"vod_play_from\":" + J.q(from)
                     + ",\"vod_play_url\":" + J.q(url)
                     + "}]}";
