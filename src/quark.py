@@ -19,6 +19,7 @@ config.json 中，切勿提交到仓库。
 
 from __future__ import annotations
 
+import http.cookiejar
 import json
 import os
 import re
@@ -32,8 +33,16 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE_DIR = os.path.join(ROOT, "data", "cache")
 
 PC = "https://drive-pc.quark.cn"
+# 【实测关键】必须用夸克 PC 客户端的 UA：
+#   用浏览器 UA 调 /file/download 会返回 400 "download file size limit"，
+#   换成 quark-cloud-drive 后大文件（1.8GB）直接 200。
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+      "(KHTML, like Gecko) quark-cloud-drive/3.14.2 Chrome/112.0.5615.165 "
+      "Electron/24.4.1 Safari/537.36")
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+# 转码档位优先级：raw=原画质流，low=低码率兜底
+PLAY_RESOLUTIONS = ("raw", "low")
 
 VIDEO_EXT = (".mp4", ".mkv", ".ts", ".m2ts", ".avi", ".flv", ".webm",
              ".mov", ".wmv", ".rmvb", ".mpg", ".mpeg", ".iso", ".m4v")
@@ -120,6 +129,12 @@ class _Cache:
             pass
         return None
 
+    def delete(self, key):
+        try:
+            os.remove(self._path(key))
+        except OSError:
+            pass
+
     def set(self, key, value):
         path = self._path(key)
         try:
@@ -141,6 +156,11 @@ class Quark:
         self.saved_dir = saved_dir
         self._saved_dir_fid = None
         self._lock = threading.Lock()
+        # 【实测关键】必须复用会话 Cookie（__pugs）：取流地址由 CDN 校验会话，
+        # 不带着它去请求会直接 412 Precondition Failed。
+        self._jar = http.cookiejar.CookieJar()
+        self._opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(self._jar))
 
     # ---------------- 底层请求 ---------------- #
     def _request(self, path, params=None, body=None, method=None, retries=2):
@@ -165,7 +185,7 @@ class Quark:
             req = urllib.request.Request(url, data=data, headers=headers,
                                          method=method or ("POST" if data else "GET"))
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with self._opener.open(req, timeout=self.timeout) as resp:
                     return json.loads(resp.read().decode("utf-8", "replace"))
             except urllib.error.HTTPError as exc:
                 payload = exc.read().decode("utf-8", "replace")
@@ -357,6 +377,8 @@ class Quark:
                 "pwd_id": pwd_id,
                 "stoken": self.stoken(pwd_id)["stoken"],
                 "pdir_fid": "0",
+                "pdir_save_all": False,
+                "exclude_fids": [],
                 "scene": "link",
                 "create_zip": False,
             },
@@ -382,7 +404,9 @@ class Quark:
             if resp.get("status") != 200:
                 raise QuarkError("查询任务失败：%s %s" % (resp.get("code"), resp.get("message")))
             if data.get("status") == 2:
-                fids = ((data.get("save_as") or {}).get("save_as_top_fids")) or []
+                save_as = data.get("save_as") or {}
+                fids = (save_as.get("save_as_top_fids")
+                        or save_as.get("save_as_select_top_fids") or [])
                 if fids:
                     return fids[0]
             time.sleep(0.6)
@@ -404,8 +428,8 @@ class Quark:
                 return f["fid"]
         created = self._request("/1/clouddrive/file",
                                 {"pr": "ucpro", "fr": "pc"},
-                                {"pdir_fid": parent, "file_name": target, "dir_path": "",
-                                 "file_type": 0, "dir": True})
+                                {"pdir_fid": parent, "file_name": target,
+                                 "dir_path": "", "dir_init_lock": False})
         fid = (created.get("data") or {}).get("fid")
         if not fid:
             raise QuarkError("创建目录失败：%s" % created.get("message"))
@@ -413,24 +437,155 @@ class Quark:
             self._saved_dir_fid = fid
         return fid
 
+    def _play_stream(self, own_fid):
+        """取夸克转码播放流；返回 (url, resolution)，失败返回 (None, 原因)"""
+        reason = ""
+        for res in PLAY_RESOLUTIONS:
+            try:
+                resp = self._request(
+                    "/1/clouddrive/file/play",
+                    {"pr": "ucpro", "fr": "pc", "fid": own_fid, "resolution": res},
+                )
+            except QuarkError as exc:
+                reason = str(exc)
+                continue
+            data = resp.get("data") or {}
+            for item in (data.get("video_list") or []):
+                url = (item or {}).get("url")
+                if url:
+                    return url, res
+            reason = str(resp.get("message") or resp.get("status"))
+        return None, reason
+
+    def _file_exists(self, own_fid):
+        try:
+            resp = self._request("/1/clouddrive/file",
+                                 {"pr": "ucpro", "fr": "pc", "fids": own_fid})
+        except QuarkError:
+            return False
+        return bool(((resp.get("data") or {}).get("list")))
+
     def direct_url(self, pwd_id, fid, share_token=""):
-        """返回可播放的直链（会先把分享文件转到自己网盘）"""
+        """把分享里的某个文件解析成「播放器能拉」的地址。
+
+        实测出的正确顺序（顺序错了大文件就播不了）:
+          1. 先转存到自己网盘 —— /file/play 对分享文件直接 500，
+             且 /file/download 对分享文件一律 400 download file size limit；
+          2. GET /file/play?resolution=raw -> data.video_list[].url
+             这是夸克自己转好的流，播放器最友好；
+          3. 转码是异步的，刚转存完可能还没有 video_list，退回 /file/download
+             （必须用 PC 客户端 UA，否则报大小限制）。
+        """
         if not self.cookie:
             raise QuarkAuthError("未配置 QUARK_COOKIE，无法取流")
-        own_fid = self._saved_fid(pwd_id, fid, share_token)
-        resp = self._request("/1/clouddrive/file/download",
-                             {"pr": "ucpro", "fr": "pc", "uc_param_str": ""},
-                             {"fids": [own_fid]})
+        last_error = None
+        # 缓存的转存 fid 可能因为用户清空了网盘而失效，这里失败就重转存一次
+        for round_no in range(2):
+            own_fid = self._saved_fid(pwd_id, fid, share_token)
+
+            # 转存刚完成时文件可能还不可见，先等它出现
+            for _ in range(8):
+                if self._file_exists(own_fid):
+                    break
+                time.sleep(0.8)
+            else:
+                self.cache.delete("saved_%s_%s" % (pwd_id, fid))
+                last_error = QuarkError("转存文件不可见")
+                continue
+
+            # 转码是异步的：file/play 可能还没有 video_list，多试几轮
+            reason = ""
+            for attempt in range(6):
+                url, reason = self._play_stream(own_fid)
+                if url:
+                    return url
+                time.sleep(1.5 if attempt < 3 else 3.0)
+
+            # 兜底：直链接口（必须 PC 客户端 UA，否则报 download file size limit）
+            try:
+                resp = self._request("/1/clouddrive/file/download",
+                                     {"pr": "ucpro", "fr": "pc", "uc_param_str": ""},
+                                     {"fids": [own_fid]})
+            except QuarkNotFound:
+                self.cache.delete("saved_%s_%s" % (pwd_id, fid))
+                last_error = QuarkError("转存记录已失效")
+                continue
+            for ent in (resp.get("data") or []):
+                if ent.get("download_url"):
+                    return ent["download_url"]
+            last_error = QuarkError("转码未就绪(%s)，直链接口也返回 %s"
+                                    % (reason or "-",
+                                       resp.get("message") or resp.get("status")))
+            break
+        raise last_error or QuarkError("取流失败")
+
+    def list_saved(self):
+        """列出自己网盘 4k_anime/ 里转存的文件"""
+        fid = self._ensure_dir()
+        resp = self._request("/1/clouddrive/file/sort",
+                             {"pr": "ucpro", "fr": "pc", "pdir_fid": fid,
+                              "_page": 1, "_size": 200,
+                              "_fetch_total": 1,
+                              "_sort": "file_type:asc,file_name:asc"})
+        return [f for f in ((resp.get("data") or {}).get("list") or [])
+                if not f.get("dir")]
+
+    def clear_saved(self):
+        """清空 4k_anime/ 转存目录，返回删除数量"""
+        files = self.list_saved()
+        if not files:
+            return 0
+        self._request("/1/clouddrive/file/delete", {"pr": "ucpro", "fr": "pc"},
+                      {"action_type": 2, "filelist": [f["fid"] for f in files],
+                       "exclude_fids": []})
+        return len(files)
+
+    def account_info(self):
+        """读取账号信息（用于「我的云盘」状态显示；无 Cookie 返回 {}）"""
+        if not self.cookie:
+            return {}
+        try:
+            resp = self._request("/1/clouddrive/member",
+                                 {"pr": "ucpro", "fr": "pc", "uc_param_str": ""})
+        except QuarkError:
+            return {}
         if resp.get("status") != 200:
-            raise QuarkError("取直链失败：%s %s" % (resp.get("code"), resp.get("message")))
-        for ent in (resp.get("data") or []):
-            if ent.get("download_url"):
-                return ent["download_url"]
-        raise QuarkError("未返回 download_url")
+            return {}
+        return resp.get("data") or {}
+
+    def open_stream(self, url, extra_headers=None):
+        """带着会话 Cookie 打开取流地址。
+
+        CDN 会校验取流时下发到会话里的 __pugs，缺了直接 412 Precondition
+        Failed —— 所以播放必须由服务端代理，不能让播放器直连。
+        """
+        headers = {"User-Agent": UA, "Referer": "https://pan.quark.cn/",
+                   "Accept": "*/*"}
+        headers.update(extra_headers or {})
+        return self._opener.open(urllib.request.Request(url, headers=headers),
+                                 timeout=60)
 
 
 def _brief(payload, n=120):
     return re.sub(r"\s+", " ", str(payload))[:n]
+
+
+def clear_saved_cookie():
+    """从 config.json 里删掉 quark_cookie（「清除夸克账号」用）"""
+    cfg_path = os.path.join(ROOT, "config.json")
+    if not os.path.exists(cfg_path):
+        return False
+    try:
+        with open(cfg_path, encoding="utf-8") as fh:
+            cfg = json.load(fh) or {}
+    except (OSError, ValueError):
+        return False
+    if not cfg.get("quark_cookie"):
+        return False
+    cfg.pop("quark_cookie", None)
+    with open(cfg_path, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh, ensure_ascii=False, indent=2)
+    return True
 
 
 def client_from_env():

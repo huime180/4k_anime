@@ -29,7 +29,8 @@
 | 像玩偶哥哥那样的接口 | `GET /spider/home`、`/spider/category`、`/spider/detail`、`/spider/play` |
 | 通用 TVBox 也能用 | `GET /api.php/provide/vod/?ac=list` / `?ac=detail`（标准苹果CMS JSON） |
 | 解析播放夸克链接 | `GET /play?pwd=<分享ID>&fid=<文件ID>&ft=<分享令牌>` → `302` 到直链，或 `&proxy=1` 反代 |
-| **夸克扫码登录** | 打开 `GET /login` 用夸克 App 扫码，Cookie 自动写入 `config.json` 并热生效 |
+| **我的云盘┃配置** | CMS 里的伪分类：① 账号状态 ② 扫码登录 ③ 清除账号 ④ 清空转存缓存，**在影视仓内即可完成** |
+| 夸克扫码登录 | 详情页封面直接就是二维码，服务端后台轮询，扫完自动保存 Cookie 并热生效 |
 | 视频有封面 | Bangumi 封面自动匹配；匹配不到时由服务端实时生成占位封面 PNG |
 | 自动同步表格 | `.github/workflows/sync.yml`，每周一自动拉取并提交 |
 | 按表格分类继续分类 | `每周更新`(15 个季度子类) / `TV动画合集` / `其余群友资源合集`(含子类) |
@@ -78,7 +79,20 @@ python3 src/server.py --port 8787
 
 要么复制 `config.example.json` 成 `config.json` 填进去（`config.json` 已被 `.gitignore` 忽略，**不要提交**）。
 
-#### 推荐：网页扫码登录（和饭太硬一样）
+#### 推荐：在影视仓里直接操作「我的云盘┃配置」
+
+配置加载后，分类里会多一个 **🗂我的云盘┃配置**，点进去有四项：
+
+| 条目 | 作用 |
+| --- | --- |
+| ① 夸克账号状态 | 详情页直接显示昵称 / 会员等级 / 容量 |
+| ② 扫码登录夸克 | **详情页封面就是二维码**，用夸克 App 扫它；服务端后台自动轮询，扫完即登录 |
+| ③ 清除夸克账号 | 删掉 `config.json` 里的 Cookie，立即生效 |
+| ④ 清空转存缓存 | 删除 `4k_anime/` 目录（播放要转存文件占空间，看完可清理） |
+
+不需要打开任何网页；`/login` 网页版仍然保留，命令行也有 `python3 src/quark_login.py`。
+
+#### 网页扫码登录（备用）
 
 服务启动后打开：
 
@@ -238,11 +252,33 @@ Bangumi 返回的封面在 `lain.bgm.tv`，实测这个 **图片 CDN 在部分�
 | 列目录 | `GET /1/clouddrive/share/sharepage/detail` | 否 |
 | 转存到自己网盘 | `POST /1/clouddrive/share/sharepage/save` | **是** |
 | 查询转存任务 | `GET /1/clouddrive/task` | **是** |
-| 取直链 | `POST /1/clouddrive/file/download` | **是** |
+| **取转码流（播放用）** | `GET /1/clouddrive/file/play?fid=…&resolution=raw` | **是** |
+| 取下载直链 | `POST /1/clouddrive/file/download` | **是** |
 
-解析流程：`token → detail（列目录/定位番剧文件夹）→ save（转存到自己网盘）→
-task（等转存完成）→ file/download（拿直链）`。转存结果做了 7 天磁盘缓存，
-不会每次播放都往用户网盘里塞新文件。
+### 播放链路（踩了很多坑，结论如下）
+
+```
+token → detail(列目录/按番名定位文件夹) → save(转存到自己网盘)
+      → task(等转存完成)
+      → /file/play?resolution=raw → data.video_list[].url   ← 真正能播的地址
+      → 服务端代理拉流（必须带会话 Cookie）
+```
+
+四个**必须**，少一个就播不了（都是实测踩出来的）：
+
+1. **必须走 `/file/play` 转码接口**，不能靠 `file/download`。
+   `file/download` 对分享文件和大文件一律返回 `400 download file size limit`。
+2. **必须先把文件转存到自己网盘**。`/file/play` 直接对分享 fid 调会返回 `500 inner error`。
+   转存结果做 7 天缓存，不会重复转存；缓存的 fid 失效会自动重转存。
+3. **必须用夸克 PC 客户端的 UA**（`quark-cloud-drive/3.14.2 …`）。
+   换成浏览器 UA 调 `file/download`，同一个 1.8GB 文件会报 `download file size limit`。
+4. **必须由服务端代理拉流，不能让播放器直连**。
+   夸克 CDN 会校验取流请求里的会话 Cookie（取链时下发的 `__pugs`），
+   缺了直接 `412 Precondition Failed` —— 所以 `/play` 默认是代理，
+   要 302 得显式传 `direct=1`。
+
+> 转码是**异步**的：刚转存完 `video_list` 还是空的，代码里会等文件可见并重试几轮，
+> 再退回 `file/download`。所以第一次播某集可能要等两三秒。
 
 ---
 
@@ -255,7 +291,7 @@ task（等转存完成）→ file/download（拿直链）`。转存结果做了 
 │   ├── enrich.py         # Bangumi 封面/简介/评分 → data/meta.json（增量缓存）
 │   ├── quark.py          # 夸克 token/列目录/模糊匹配/转存/取直链
 │   ├── server.py         # HTTP 服务：配置 + CMS + spider + 取流 + 网页
-│   ├── quark_login.py    # 夸克扫码登录（取码/轮询/换 Cookie）
+│   ├── quark_login.py    # 夸克扫码登录（取码/轮询/换 Cookie/二维码 PNG）
 │   ├── _vendor/segno/    # 内置二维码库（BSD-3-Clause），保持零依赖
 │   └── build_config.py   # 生成 public/4k_anime.json 与静态站点数据
 ├── data/                 # 自动生成的同步结果与缓存（cache/ 不提交）

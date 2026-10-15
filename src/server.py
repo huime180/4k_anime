@@ -35,8 +35,8 @@ import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from quark import (Quark, QuarkAuthError, QuarkError, client_from_env,  # noqa: E402
-                   normalize_name)
+from quark import (Quark, QuarkAuthError, QuarkError,  # noqa: E402
+                   clear_saved_cookie, client_from_env, normalize_name)
 import quark_login  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -47,6 +47,15 @@ CONFIG_FILE = os.path.join(ROOT, "config.json")
 
 DEFAULT_LIMIT = 24
 EPISODE_TTL = 600
+
+# 「我的云盘┃配置」在 CMS 里的伪分类：不依赖网页，直接在影视仓里就能登录/清除
+MYDRIVE_TYPE_ID = 9000
+MYDRIVE_ITEMS = [
+    {"id": "mydrive:status", "name": "① 夸克账号状态", "remark": "查看当前是否已登录"},
+    {"id": "mydrive:login",  "name": "② 扫码登录夸克", "remark": "打开详情页，扫封面二维码"},
+    {"id": "mydrive:clear",  "name": "③ 清除夸克账号", "remark": "删除已保存的 Cookie"},
+    {"id": "mydrive:clean",  "name": "④ 清空转存缓存", "remark": "释放播放时占用的网盘空间"},
+]
 
 
 # --------------------------------------------------------------------------- #
@@ -96,7 +105,8 @@ class App:
         self.quark = client_from_env()
         self._episodes = {}          # item_id -> (ts, payload)
         self._cover_cache = {}
-        self.qr_sessions = {}        # token -> {rid, created, used}
+        self.qr_sessions = {}        # token -> {rid, created}
+        self.qr_workers = {}         # token -> Thread
         self._by_type_top = {}
         self._by_type = {}
         self._by_id = {}
@@ -116,6 +126,15 @@ class App:
         for it in self.anime.get("items", []):
             self._by_type.setdefault(it.get("type_id"), []).append(it["id"])
             self._by_type_top.setdefault(it.get("type_id_top"), []).append(it["id"])
+
+    def account_info(self):
+        return self.quark.account_info()
+
+    def clear_cookie(self):
+        """清除已保存的夸克 Cookie，并立即生效"""
+        removed = clear_saved_cookie()
+        self.quark = client_from_env()
+        return removed
 
     def reload(self):
         with self.lock:
@@ -400,6 +419,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.page_login(query)
             if path == "/api/qr/new":
                 return self.qr_new(query)
+            if path in ("/mydrive.png", "/qr.png"):
+                return self.mydrive_png(query)
+            if path == "/mydrive/act":
+                return self.mydrive_act(query)
             if path == "/api/qr/poll":
                 return self.qr_poll(query)
             return self.send_json({"error": "not found", "path": path}, 404)
@@ -411,6 +434,138 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(exc)}, 500)
             except Exception:
                 pass
+
+    # ---------------- 我的云盘（纯接口，可在影视仓内完成） ---------------- #
+    def _cookie_ok(self):
+        """Cookie 是否还有效（能读到账号信息）"""
+        try:
+            return bool(self.app.quark.account_info())
+        except Exception:
+            return False
+
+    def mydrive_brief(self, item, base):
+        pic_key = item["id"].split(":")[1]
+        ts = int(time.time())
+        return {
+            "vod_id": item["id"],
+            "vod_name": item["name"],
+            "vod_pic": "%s/mydrive.png?k=%s&t=%d" % (base, pic_key, ts),
+            "vod_remarks": item["remark"],
+            "type_id": MYDRIVE_TYPE_ID,
+            "type_name": "🗂我的云盘┃配置",
+            "vod_year": "",
+        }
+
+    def mydrive_detail(self, item, base):
+        key = item["id"].split(":")[1]
+        info = self.app.quark.account_info() if self.app.quark.cookie else {}
+        self._qr_url_for_detail = ""
+        nick = (info or {}).get("nickname") or ""
+        member = (info or {}).get("member_type") or ""
+        lines = []
+
+        if key == "status":
+            if info:
+                lines.append("✅ 夸克已登录" + (("：%s" % nick) if nick else ""))
+                lines.append("会员：%s" % (member or "未知"))
+                cap = (info or {}).get("total_capacity") or 0
+                if cap:
+                    lines.append("容量：%.2f TB" % (cap / 1e12))
+            else:
+                lines.append("❌ 夸克未登录（或 Cookie 已失效）")
+                lines.append("请进入「② 扫码登录夸克」，扫封面上的二维码。")
+        elif key == "login":
+            sess = self._new_qr_session()
+            if sess:
+                self._qr_url_for_detail = sess["url"]
+                lines.append("请用【夸克 App → 扫一扫】扫描本页封面上的二维码。")
+                lines.append("扫码并在手机上确认后，服务端会自动保存 Cookie，无需其他操作。")
+                lines.append("码有效期约 5 分钟；过期就退出重进本页换一张。")
+        elif key == "clear":
+            removed = self.app.clear_cookie()
+            lines.append("🗑 已清除夸克账号 Cookie。" if removed else "当前没有已保存的 Cookie。")
+            lines.append("如需再次使用，进入「② 扫码登录夸克」重新扫码。")
+        elif key == "clean":
+            if not self.app.quark.cookie:
+                lines.append("未登录夸克，无需清理。")
+            else:
+                try:
+                    n = self.app.quark.clear_saved()
+                    lines.append("🧹 已清空 4k_anime/ 转存目录，删除 %d 个文件。" % n)
+                    lines.append("（播放时为了取转码流会把文件转存到这里，看完可以清理释放空间）")
+                except QuarkError as exc:
+                    lines.append("清理失败：%s" % exc)
+
+        detail = self.mydrive_brief(item, base)
+        if key == "login":
+            qr = getattr(self, "_qr_url_for_detail", "")
+            if qr:
+                detail["vod_pic"] = "%s/mydrive.png?k=login&u=%s&t=%d" % (
+                    base, urllib.parse.quote(qr, safe=""), int(time.time()))
+        detail.update({
+            "vod_content": "\n".join(lines),
+            "vod_play_from": "mydrive",
+            # 播放地址留成动作接口，误点也不会崩：返回一行文字
+            "vod_play_url": "%s/play$%s/mydrive/act?do=%s" % (item["name"], base, key),
+            "vod_area": "配置", "vod_lang": "", "vod_actor": "", "vod_director": "",
+        })
+        return detail
+
+    def _new_qr_session(self):
+        """申请二维码，并起一个后台线程自动等待登录完成"""
+        try:
+            session = quark_login.new_session()
+        except quark_login.LoginError:
+            return None
+        self.app.qr_sessions[session["token"]] = {"rid": session["request_id"],
+                                                  "created": time.time()}
+        self._start_qr_worker(session["token"], session["request_id"])
+        return session
+
+    def _start_qr_worker(self, token, rid):
+        app = self.app
+
+        def run():
+            deadline = time.time() + 300
+            while time.time() < deadline:
+                state, payload = quark_login.poll(token, rid)
+                if state == quark_login.CONFIRMED:
+                    try:
+                        cookie, _info = quark_login.exchange_cookie(payload)
+                        quark_login.save_cookie(cookie)
+                        app.quark = client_from_env()
+                    except Exception:
+                        pass
+                    app.qr_sessions.pop(token, None)
+                    return
+                if state == quark_login.FAILED:
+                    app.qr_sessions.pop(token, None)
+                    return
+                time.sleep(2)
+
+        # 每个 token 一个后台线程，扫码确认后自动落盘并热更新
+        if app.qr_workers.get(token) and app.qr_workers[token].is_alive():
+            return
+        th = threading.Thread(target=run, daemon=True)
+        app.qr_workers[token] = th
+        th.start()
+
+    def mydrive_png(self, query):
+        key = query.get("k") or "status"
+        if key == "login":
+            # 详情页会把本次会话的二维码内容放在 u= 里，直接渲染，保证扫的和轮询的是同一个
+            url = query.get("u") or ""
+            if not url:
+                return self.send_bytes(quark_login.status_png(False), "image/png")
+            return self.send_bytes(quark_login.qr_png(url), "image/png",
+                                   extra={"Cache-Control": "no-store"})
+        ok = self._cookie_ok()
+        return self.send_bytes(quark_login.status_png(ok), "image/png",
+                               extra={"Cache-Control": "no-store"})
+
+    def mydrive_act(self, query):
+        return self.send_json({"ok": True, "do": query.get("do", ""),
+                               "cookie": bool(self.app.quark.cookie)})
 
     # ---------------- 扫码登录 ---------------- #
     def admin_ok(self, query):
@@ -540,8 +695,10 @@ class Handler(BaseHTTPRequestHandler):
     def cms(self, query):
         base = self.base_url()
         ac = (query.get("ac") or "list").lower()
-        classes = self.app.anime.get("classes", [])
         items = self.app.anime.get("items", [])
+        # 「我的云盘┃配置」作为一个伪分类挂进来，影视仓里就能登录/清除
+        classes = list(self.app.anime.get("classes", [])) + [
+            {"type_id": MYDRIVE_TYPE_ID, "type_name": "🗂我的云盘┃配置", "type_pid": 0}]
 
         if ac == "list":
             sample = [self._vod_brief(it, base) for it in items[:20]]
@@ -555,12 +712,28 @@ class Handler(BaseHTTPRequestHandler):
         limit = max(1, min(100, int(query.get("limit") or DEFAULT_LIMIT)))
 
         if ids:
-            picked = [self.app._by_id[i] for i in ids if i in self.app._by_id]
+            out = []
+            for i in ids:
+                if i.startswith("mydrive:"):
+                    hit = next((m for m in MYDRIVE_ITEMS if m["id"] == i), None)
+                    if hit:
+                        out.append(self.mydrive_detail(hit, base))
+                elif i in self.app._by_id:
+                    out.append(self._vod_detail(self.app._by_id[i], base))
             return self.send_json({
-                "class": classes,
-                "list": [self._vod_detail(it, base) for it in picked],
-                "total": len(picked), "page": 1, "limit": len(picked), "pagecount": 1,
+                "class": classes, "list": out,
+                "total": len(out), "page": 1, "limit": len(out), "pagecount": 1,
             })
+
+        # 我的云盘伪分类的列表
+        try:
+            if t and int(t) == MYDRIVE_TYPE_ID:
+                out = [self.mydrive_brief(m, base) for m in MYDRIVE_ITEMS]
+                return self.send_json({"class": classes, "list": out,
+                                       "total": len(out), "page": 1,
+                                       "limit": len(out), "pagecount": 1})
+        except ValueError:
+            pass
 
         pool = items
         if wd:
@@ -618,6 +791,9 @@ class Handler(BaseHTTPRequestHandler):
         classes = self.app.anime.get("classes", [])
         items = self.app.anime.get("items", [])
 
+        classes = list(classes) + [
+            {"type_id": MYDRIVE_TYPE_ID, "type_name": "🗂我的云盘┃配置", "type_pid": 0}]
+
         if action in ("home", ""):
             return self.send_json({"class": classes,
                                    "list": [self._vod_brief(it, base) for it in items[:20]]})
@@ -629,6 +805,13 @@ class Handler(BaseHTTPRequestHandler):
             t = query.get("t") or query.get("type_id")
             page = max(1, int(query.get("pg") or 1))
             limit = max(1, min(100, int(query.get("limit") or DEFAULT_LIMIT)))
+            try:
+                if t and int(t) == MYDRIVE_TYPE_ID:
+                    out = [self.mydrive_brief(m, base) for m in MYDRIVE_ITEMS]
+                    return self.send_json({"page": 1, "pagecount": 1, "limit": len(out),
+                                           "total": len(out), "class": classes, "list": out})
+            except ValueError:
+                pass
             pool = items
             try:
                 tid = int(t) if t else None
@@ -648,8 +831,15 @@ class Handler(BaseHTTPRequestHandler):
 
         if action == "detail":
             ids = [x for x in (query.get("ids") or query.get("id") or "").split(",") if x]
-            picked = [self.app._by_id[i] for i in ids if i in self.app._by_id]
-            return self.send_json({"list": [self._vod_detail(it, base) for it in picked]})
+            out = []
+            for i in ids:
+                if i.startswith("mydrive:"):
+                    hit = next((m for m in MYDRIVE_ITEMS if m["id"] == i), None)
+                    if hit:
+                        out.append(self.mydrive_detail(hit, base))
+                elif i in self.app._by_id:
+                    out.append(self._vod_detail(self.app._by_id[i], base))
+            return self.send_json({"list": out})
 
         if action == "search":
             wd = (query.get("wd") or query.get("key") or "").strip()
@@ -696,8 +886,13 @@ class Handler(BaseHTTPRequestHandler):
         except QuarkError as exc:
             return self.send_json({"error": str(exc)}, 502)
 
-        if query.get("proxy") in ("1", "true", "yes"):
-            return self._proxy(url)
+        # 默认走服务端代理：夸克 CDN 会校验取流时下发到会话里的 __pugs，
+        # 少了它播放器直连必然 412 Precondition Failed。要 302 可显式传 direct=1。
+        if query.get("direct") in ("1", "true", "yes"):
+            return self._redirect(url)
+        return self._proxy(url)
+
+    def _redirect(self, url):
         self.send_response(302)
         self.send_header("Location", url)
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -706,17 +901,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _proxy(self, url):
         """反代直链，支持 Range，兼容不跟随 302 的播放器"""
-        headers = {
-            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                           "AppleWebKit/537.36 Chrome/120.0 Safari/537.36"),
-            "Referer": "https://pan.quark.cn/",
-        }
+        extra = {}
         rng = self.headers.get("Range")
         if rng:
-            headers["Range"] = rng
-        req = urllib.request.Request(url, headers=headers)
+            extra["Range"] = rng
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with self.app.quark.open_stream(url, extra) as resp:
                 self.send_response(resp.status)
                 for key, value in resp.headers.items():
                     if key.lower() in ("content-type", "content-length", "content-range",

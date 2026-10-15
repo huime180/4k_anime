@@ -218,3 +218,30 @@ if __name__ == "__main__":
     except LoginError as exc:
         print("[login] %s" % exc, file=sys.stderr)
         raise SystemExit(1)
+
+def qr_png(text, scale=6, border=2):
+    """把二维码渲染成 PNG 字节（segno 自带 PNG writer，无第三方依赖）"""
+    import io
+    import segno
+    buf = io.BytesIO()
+    segno.make(text, error="m").save(buf, kind="png", scale=scale, border=border)
+    return buf.getvalue()
+
+
+def status_png(ok):
+    """登录状态色块图（绿=已登录 / 红=未登录），无文字依赖"""
+    import struct
+    import zlib
+    r, g, b = (46, 160, 67) if ok else (198, 58, 58)
+    w = h = 300
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+    rows = [bytes((r, g, b)) * w for _ in range(h)]
+    raw = b"".join(b"\x00" + row for row in rows)
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 6))
+            + chunk(b"IEND", b""))
