@@ -86,6 +86,13 @@ def _load_json(path, default):
 def _fill_items(anime, meta, pages):
     """把封面 + 详情写进每个 item（spider 直接读这份 JSON）"""
     hit_cover = hit_detail = 0
+
+    # 有多少条目共用同一个分享（>1 就是「一季一个大文件夹」的合集，
+    # spider 据此只留本条目对应的那个目录）
+    share_count = {}
+    for item in anime.get("items", []):
+        pwd = item.get("pwd_id") or ""
+        share_count[pwd] = share_count.get(pwd, 0) + 1
     for item in anime.get("items", []):
         info = meta.get(normalize_name(item.get("name", ""))) or {}
         pic = info.get("image") or ""
@@ -101,6 +108,9 @@ def _fill_items(anime, meta, pages):
         item["vod_director"] = info.get("director") or ""
         item["vod_actor"] = info.get("actor") or ""
         item["vod_content"] = (info.get("summary") or "").strip()
+        item["share_count"] = share_count.get(item.get("pwd_id") or "", 1)
+        # 别名（Bangumi 的 别名/原名/中文名）：目录常写成英文/日文原名，spider 筛目录时一起比
+        item["vod_alias"] = info.get("aliases") or ""
         if item["vod_director"] or item["vod_actor"] or item["vod_area"]:
             hit_detail += 1
 

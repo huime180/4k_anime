@@ -49,6 +49,8 @@ public class Anime4KGuard extends Spider {
     private boolean plainTried = false, sessionTried = false;
     private String realReason = "未尝试";   // 饭太硬原生那条失败的原因（写进详情，方便排查）
     private String dataUrl = "";
+    private boolean subfolderOnly = true;  // 合集分享只留本条目对应的那个目录（ext.subfolder=false 可关）
+    String filterNote = "";                // 筛选结果，写进简介，在 App 里看得见
     private J theirsMeta = null;         // 饭太硬那条详情的第一个条目（字段回填用）
 
     private static String dataCache = null;
@@ -68,6 +70,9 @@ public class Anime4KGuard extends Spider {
                 if (!d2.isEmpty()) extraUrls.add(d2);
                 if (!d3.isEmpty()) extraUrls.add(d3);
                 sessionUrl = o.str("session");
+                if (o.get("subfolder") != null && "false".equalsIgnoreCase(o.str("subfolder"))) {
+                    subfolderOnly = false;
+                }
             } else if (!extRaw.isEmpty()) {
                 dataUrl = extRaw;
             }
@@ -220,7 +225,7 @@ public class Anime4KGuard extends Spider {
                         + "。可先到「🗂我的云盘┃配置」里扫码登录夸克，或在 ext 里加 session 地址";
                 return oneItem(item, id, "诊断", "点我看原因$4k:diag", why);
             }
-            return detailJson(item, id, theirs);
+            return detailJson(item, id, subfolder(item, theirs));
         } catch (Throwable t) {
             return fail("详情解析失败：" + t);
         }
@@ -253,6 +258,145 @@ public class Anime4KGuard extends Spider {
     }
 
     /** 我们没有的详情字段，向饭太硬那条详情借（它有就用它的） */
+    /* ============ 合集分享：只留本条目对应的那个目录 ============
+     *
+     * 「每周更新」是**一季一个大文件夹**（10 个分享装了 216 条条目），
+     * 饭太硬那套会把整季的剧集全列出来 —— 链接里带 #/list/share/<fid> 也没用，
+     * 它只取 /s/<pwd> 那一段（实测）。所以这里在详情里把不属于本条目的剧集筛掉。
+     *
+     * 数据侧（src/subfolder.py）已经在同步时把每个条目对应的**二级目录名**写进
+     * item["subfolder"]，这里拿它 + 番名/别名去比每一集的标签和它 id 里的
+     * parent / vodName / fileName；一个都认不出来就原样返回（宁可多列，不能点开是空的）。
+     */
+    String[] subfolder(J item, String[] theirs) {   // 包内可见，方便本地自检
+        filterNote = "";
+        if (!subfolderOnly || theirs == null || theirs.length < 2) return theirs;
+        if (item.str("share_count").isEmpty() || "1".equals(item.str("share_count"))) return theirs;
+        try {
+            String folder = item.str("subfolder");
+            List<String> probes = new ArrayList<String>();
+            if (!folder.isEmpty()) probes.add(norm(folder));
+            for (String piece : item.str("vod_alias").split("[、/／|]")) {
+                String n = norm(piece);
+                if (n.length() >= 2 && !probes.contains(n)) probes.add(n);
+            }
+            for (String n : aliases(item.str("name"))) {
+                if (!probes.contains(n)) probes.add(n);
+            }
+            if (probes.isEmpty()) return theirs;
+
+            String[] got = pickEpisodes(theirs, probes);
+            if (got[2].equals("0")) {
+                String sample = firstLabels(theirs[1], 2);
+                filterNote = "合集子目录：没认出《" + item.str("name") + "》对应的目录，先按全部 " + got[3]
+                        + " 集列出（示例：" + sample + "）";
+                if (!folder.isEmpty()) filterNote += "（数据里的目录名：" + folder + "）";
+                return theirs;
+            }
+            filterNote = "合集子目录：已只保留《" + item.str("name") + "》对应的目录"
+                    + (folder.isEmpty() ? "" : "「" + folder + "」") + "（" + got[3] + " 集 -> " + got[2] + " 集）";
+            return new String[]{got[0], got[1]};
+        } catch (Throwable t) {
+            filterNote = "合集子目录：筛选出错(" + t + ")，按全部集数列出";
+            return theirs;
+        }
+    }
+
+    /** 按一组关键词筛剧集：返回 {线路名, 播放列表, 留下的集数, 总集数} */
+    String[] pickEpisodes(String[] theirs, List<String> probes) {
+        String[] flags = theirs[0].split("\\$\\$\\$");
+        String[] groups = theirs[1].split("\\$\\$\\$");
+        StringBuilder outFlags = new StringBuilder(), outUrls = new StringBuilder();
+        int total = 0, kept = 0;
+        for (int g = 0; g < groups.length; g++) {
+            String flag = g < flags.length ? flags[g] : "";
+            boolean wholeGroup = matches(flag, probes, false);
+            StringBuilder eps = new StringBuilder();
+            int inGroup = 0;
+            for (String ep : groups[g].split("#")) {
+                if (ep.isEmpty()) continue;
+                total++;
+                if (wholeGroup || episodeMatches(ep, probes)) {
+                    if (inGroup++ > 0) eps.append("#");
+                    eps.append(ep);
+                    kept++;
+                }
+            }
+            if (inGroup > 0) {
+                if (outUrls.length() > 0) { outFlags.append("$$$"); outUrls.append("$$$"); }
+                outFlags.append(flag);
+                outUrls.append(eps);
+            }
+        }
+        return new String[]{outFlags.toString(), outUrls.toString(), String.valueOf(kept), String.valueOf(total)};
+    }
+
+    /** 番名的几种写法：名字里的「A/B」拆开当别名，另外带上数据里的别名（Bangumi 的） */
+    List<String> aliases(String name) {
+        List<String> out = new ArrayList<String>();
+        for (String piece : name.split("[/／|]")) {
+            String norm = norm(piece);
+            if (norm.length() >= 2 && !out.contains(norm)) out.add(norm);
+        }
+        String whole = norm(name);
+        if (whole.length() >= 2 && !out.contains(whole)) out.add(0, whole);
+        return out;
+    }
+
+    /** 这一集是不是属于本条目：标签 + id JSON 里的 parent/vodName/file_name 都比一遍 */
+    boolean episodeMatches(String ep, List<String> probes) {
+        int cut = ep.lastIndexOf('$');
+        String label = cut > 0 ? ep.substring(0, cut) : ep;
+        if (matches(label, probes, true)) return true;
+        if (cut > 0 && ep.charAt(cut + 1) == '{') {
+            try {
+                J meta = J.parse(ep.substring(cut + 1));
+                if (matches(meta.str("parent"), probes, false)) return true;
+                if (matches(meta.str("vodName"), probes, false)) return true;
+                if (matches(meta.str("file_name"), probes, false)) return true;
+            } catch (Throwable ignore) { }
+        }
+        return false;
+    }
+
+    /** 认目录：整名包含优先；标签再宽松一点（前 8 个字） */
+    boolean matches(String text, List<String> probes, boolean loose) {
+        String hay = norm(text);
+        if (hay.isEmpty()) return false;
+        for (String a : probes) {
+            if (hay.contains(a) || (a.contains(hay) && hay.length() >= 2)) return true;
+            if (loose && a.length() >= 8 && hay.contains(a.substring(0, 8))) return true;
+        }
+        return false;
+    }
+
+    /** 认不出来时把前几集标签写进简介，方便排查 */
+    String firstLabels(String urls, int n) {
+        StringBuilder sb = new StringBuilder();
+        for (String group : urls.split("\\$\\$\\$")) {
+            for (String ep : group.split("#")) {
+                if (ep.isEmpty()) continue;
+                int cut = ep.lastIndexOf('$');
+                String label = cut > 0 ? ep.substring(0, cut) : ep;
+                if (sb.length() > 0) sb.append(" / ");
+                sb.append(label.length() > 36 ? label.substring(0, 36) : label);
+                if (--n <= 0) return sb.toString();
+            }
+        }
+        return sb.toString();
+    }
+
+    /** 番名归一化：剥括号、剥「147.」序号、剥 S2/第2期、去标点空格，转小写 */
+    static String norm(String s) {
+        if (s == null) return "";
+        String t = s.replaceAll("[\\[\\(（【][^\\]\\)）】]*[\\]\\)）】]", "");
+        t = t.replaceAll("^\\s*\\d{1,4}\\s*[.\\-_、 ]\\s*", "");
+        t = t.replaceAll("(?i)(?<![a-z0-9])(s\\d{1,2}|season\\s*\\d{1,2})(?![0-9])", "");
+        t = t.replaceAll("第\\s*[0-9一二三四五六七八九十]{1,3}\\s*[期季部]", "");
+        t = t.replaceAll("[\\s\\-_~·・:：,，。.、!！?？/\\\\|+&]+", "");
+        return t.toLowerCase();
+    }
+
     private String pick(String mine, String key) {
         if (mine != null && !mine.isEmpty()) return mine;
         if (theirsMeta == null) return "";
@@ -269,6 +413,7 @@ public class Anime4KGuard extends Spider {
             String other = theirsMeta.str("vod_content");
             if (!other.isEmpty()) sb.append(other).append("\n\n");
         }
+        if (!filterNote.isEmpty()) sb.append(filterNote).append("\n");
         sb.append("画质 ").append(item.str("resolution"))
           .append(" ｜ 修复 ").append(item.str("model"))
           .append(" ｜ 解析：饭太硬原生(").append(parseFrom).append(")");
