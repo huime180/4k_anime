@@ -51,6 +51,10 @@ public class Anime4KGuard extends Spider {
     private String dataUrl = "";
     private boolean subfolderOnly = true;  // 合集分享只留本条目对应的那个目录（ext.subfolder=false 可关）
     private boolean ownPlay = true;        // 合集条目用「本地清单 + 饭太硬取流」（它自己解析整季会 OOM）
+    private boolean ownPlayAlways = false; // ext.ownPlayAlways=true：所有合集都走本地清单
+    private static J refTx = null;         // 参考模板：它自己解析小合集拿到的真实 id 结构
+    private static boolean refTried = false;
+    private static String refSample = "";
     String filterNote = "";                // 筛选结果，写进简介，在 App 里看得见
     private static String sharePwd = null, shareBody = null;
     private static long shareAt = 0;
@@ -78,6 +82,9 @@ public class Anime4KGuard extends Spider {
                 }
                 if (o.get("ownPlay") != null && "false".equalsIgnoreCase(o.str("ownPlay"))) {
                     ownPlay = false;
+                }
+                if (o.get("ownPlayAlways") != null && "true".equalsIgnoreCase(o.str("ownPlayAlways"))) {
+                    ownPlayAlways = true;
                 }
             } else if (!extRaw.isEmpty()) {
                 dataUrl = extRaw;
@@ -398,6 +405,8 @@ public class Anime4KGuard extends Spider {
                 url.append(label).append("$4k:tx:").append(pwd).append(":").append(i);
             }
             if (n == 0) return null;
+            // 只有足够大的合集才绕开它的整季解析（小合集它自己解析是好的，就别动）
+            if (files.size() < 400 && !ownPlayAlways) return null;
             filterNote = "本地清单：《" + item.str("name") + "》共 " + n + " 集（不调用整季解析）";
             String list = url.toString();
             return new String[]{"夸父原$$$夸父智", list + "$$$" + list};
@@ -407,27 +416,102 @@ public class Anime4KGuard extends Spider {
     }
 
     /** 把一条文件拼成它自己的 tX JSON（Gson 的字段名，它拿去转存 + 取直链） */
+    /**
+     * 参考模板：让**它自己**去解析一个小合集（小合集不会 OOM），从它的播放 id 里
+     * 拆出真实的 tX 结构当模板 —— 我们的字段照它填，不靠猜。只跑一次，之后缓存。
+     */
+    J reference() {
+        if (refTx != null) return refTx;
+        if (refTried) return null;
+        refTried = true;
+        try {
+            for (J it : data().arr("items")) {
+                long count = 1;
+                try { count = Long.parseLong(it.str("share_count")); } catch (Throwable ignore) { }
+                if (count <= 1 || it.str("pwd_id").isEmpty()) continue;
+                try {
+                    if (share(it.str("pwd_id")).arr("files").size() > 300) continue;   // 只要小合集
+                } catch (Throwable ignore) { continue; }
+                String[] t = realDetail2("https://pan.quark.cn/s/" + it.str("pwd_id"), it.str("name"));
+                if (t == null) continue;
+                String json = null;
+                for (String group : t[1].split("\\$\\$\\$")) {
+                    for (String ep : group.split("#")) {
+                        int cut = ep.lastIndexOf('$');
+                        if (cut > 0 && ep.charAt(cut + 1) == '{') { json = ep.substring(cut + 1); break; }
+                    }
+                    if (json != null) break;
+                }
+                if (json == null) continue;
+                refTx = J.parse(json);
+                refSample = briefly(json);
+                return refTx;
+            }
+        } catch (Throwable ignore) { }
+        return null;
+    }
+
+    /** 把一条文件拼成它自己的 tX JSON：以参考模板为底，覆盖成本条 + 本分享的值 */
     String txJson(String pwd, J share, J f, String flag) {
-        String size = f.str("s");
-        String created = f.str("c");
-        return "{"
-                + "\"fid\":" + J.q(f.str("fid"))
-                + ",\"share_fid_token\":" + J.q(f.str("tk"))
-                + ",\"file_name\":" + J.q(f.str("n"))
-                + ",\"size\":" + (size.isEmpty() ? "0" : size)
-                + ",\"pdir_fid\":" + J.q(f.str("p"))
-                + ",\"format_type\":" + J.q(f.str("t"))
-                + ",\"l_created_at\":" + (created.isEmpty() ? "0" : created)
-                + ",\"sId\":" + J.q(pwd)
-                + ",\"sToken\":" + J.q(share.str("stoken"))
-                + ",\"shareUser\":" + J.q(share.str("author"))
-                + ",\"sTitle\":" + J.q(share.str("title"))
-                + ",\"pg\":\"1\""
-                + ",\"parent\":" + J.q(f.str("d"))
-                + ",\"sub\":" + J.q(share.str("title"))
-                + ",\"vodName\":" + J.q(f.str("d"))
-                + ",\"flag\":" + J.q(flag)
-                + "}";
+        J ref = reference();
+        StringBuilder sb = new StringBuilder("{");
+        List<String> done = new ArrayList<String>();
+        if (ref != null) {
+            for (String k : ref.keys()) {            // 模板里有、我们不覆盖的字段照抄
+                if (isOurs(k)) continue;
+                comma(sb);
+                sb.append(J.q(k)).append(":").append(J.q(ref.str(k)));
+                done.add(k);
+            }
+            if (!ref.str("flag").isEmpty()) flag = ref.str("flag");
+        }
+        put(sb, done, "fid", f.str("fid"));
+        put(sb, done, "share_fid_token", f.str("tk"));
+        put(sb, done, "file_name", f.str("n"));
+        putNum(sb, done, "size", f.str("s"));
+        put(sb, done, "pdir_fid", f.str("p"));
+        put(sb, done, "format_type", f.str("t"));
+        putNum(sb, done, "l_created_at", f.str("c"));
+        put(sb, done, "sId", pwd);
+        put(sb, done, "sToken", share.str("stoken"));
+        put(sb, done, "shareUser", share.str("author"));
+        put(sb, done, "pg", ref != null && !ref.str("pg").isEmpty() ? ref.str("pg") : "1");
+        put(sb, done, "parent", f.str("d"));
+        put(sb, done, "vodName", f.str("d"));
+        put(sb, done, "sub", share.str("title"));
+        put(sb, done, "flag", flag);
+        return sb.append("}").toString();
+    }
+
+    private static boolean isOurs(String k) {
+        return "fid".equals(k) || "share_fid_token".equals(k) || "file_name".equals(k)
+                || "size".equals(k) || "pdir_fid".equals(k) || "format_type".equals(k)
+                || "l_created_at".equals(k) || "sId".equals(k) || "sToken".equals(k)
+                || "shareUser".equals(k) || "pg".equals(k) || "parent".equals(k)
+                || "vodName".equals(k) || "sub".equals(k) || "flag".equals(k);
+    }
+
+    private static void comma(StringBuilder sb) {
+        if (sb.length() > 1) sb.append(",");
+    }
+
+    private static void put(StringBuilder sb, List<String> done, String k, String v) {
+        if (done.contains(k)) return;
+        comma(sb);
+        sb.append(J.q(k)).append(":").append(J.q(v == null ? "" : v));
+        done.add(k);
+    }
+
+    private static void putNum(StringBuilder sb, List<String> done, String k, String v) {
+        if (done.contains(k)) return;
+        comma(sb);
+        sb.append(J.q(k)).append(":").append(v == null || v.isEmpty() ? "0" : v);
+        done.add(k);
+    }
+
+    private static String briefly(String s) {
+        if (s == null) return "(null)";
+        return s.length() > 300 ? s.substring(0, 300) + "…" : s;
     }
 
     /** 按一组关键词筛剧集：返回 {线路名, 播放列表, 留下的集数, 总集数} */
@@ -577,8 +661,17 @@ public class Anime4KGuard extends Spider {
                 // 把这一条文件的 fid/名字/大小/share_fid_token/上级目录 + 分享信息
                 // 拼成它自己的 tX JSON；然后把 id 换成它，继续走下面的转发（转存 + 取直链还是它那套）
                 id = txJson(pwd, share, files.get(idx), flag);
+                Spider rq = real();
+                if (rq == null) return media("拿不到饭太硬的夸克实现：" + realReason);
+                String out = rq.playerContent(flag, id, vipFlags);
+                if (out == null || out.length() < 20 || !out.contains("url")) {
+                    return media("合集取流没返回地址。它返回：" + briefly(out)
+                            + " ｜ 我们发的：" + briefly(id)
+                            + " ｜ 它自己的样例：" + briefly(refSample));
+                }
+                return out;
             } catch (Throwable t) {
-                return media("取流失败：" + t);
+                return media("合集取流失败：" + t);
             }
         }
         if (id != null && id.startsWith("4k:diag")) {
