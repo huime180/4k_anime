@@ -14,3 +14,12 @@ __pycache__/
 work/
 yh_*.json
 *.tmp
+
+# spider 构建产物（只保留 jar/ 下的成品）
+spider/out/
+spider/dex/
+spider/jarbuild/
+spider/*.jar
+work/merge/
+qs.txt
+srv.log
