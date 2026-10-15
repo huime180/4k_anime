@@ -23,6 +23,8 @@ import http.cookiejar
 import json
 import os
 import re
+import socket
+import ssl
 import threading
 import time
 import urllib.error
@@ -569,10 +571,10 @@ class Quark:
             self._saved_dir_fid = fid
         return fid
 
-    def _play_stream(self, own_fid):
+    def _play_stream(self, own_fid, resolution=None):
         """取夸克转码播放流；返回 (url, resolution)，失败返回 (None, 原因)"""
         reason = ""
-        for res in PLAY_RESOLUTIONS:
+        for res in ((resolution,) if resolution else PLAY_RESOLUTIONS):
             try:
                 resp = self._request(
                     "/1/clouddrive/file/play",
@@ -770,6 +772,108 @@ class Quark:
         if resp.get("status") != 200:
             return {}
         return resp.get("data") or {}
+
+    # 并发拉流节点数：实测 3 个不同 CDN 节点并发可达单节点 1.8x 吞吐
+    # （玩偶哥哥抓包也是同时连 8+ 个 alikunlun 节点）
+    PARALLEL_N = int(os.environ.get("PARALLEL_N", "4"))
+    PARALLEL_CHUNK = 8 * 1024 * 1024
+
+    def _host_ips(self, host):
+        """解析出该 CDN 主机的全部 IPv4（用于多节点分发）"""
+        try:
+            infos = socket.getaddrinfo(host, 443, socket.AF_INET)
+            return sorted({i[4][0] for i in infos})
+        except OSError:
+            return []
+
+    def _fetch_range(self, host, ip, path, start, end, headers, sink):
+        """从指定 IP 拉 [start,end]，边收边塞进 sink（queue），结束塞 None"""
+        try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            raw = socket.create_connection((ip, 443), timeout=20)
+            ss = ctx.wrap_socket(raw, server_hostname=host)
+            req = ["GET %s HTTP/1.1" % path, "Host: " + host]
+            for k, v in (headers or {}).items():
+                req.append("%s: %s" % (k, v))
+            req.append("Range: bytes=%d-%d" % (start, end))
+            req.append("Accept-Encoding: identity")
+            req.append("Connection: close")
+            ss.sendall(("\r\n".join(req) + "\r\n\r\n").encode())
+            head = b""
+            while b"\r\n\r\n" not in head:
+                d = ss.recv(4096)
+                if not d:
+                    break
+                head += d
+            body_start = head.split(b"\r\n\r\n", 1)[1] if b"\r\n\r\n" in head else b""
+            if body_start:
+                sink.put(body_start)
+            while True:
+                d = ss.recv(262144)
+                if not d:
+                    break
+                sink.put(d)
+            ss.close()
+        except Exception:
+            pass
+        finally:
+            sink.put(None)
+
+    def stream_ranges(self, url, start, end, extra_headers=None, n=None):
+        """并发从多个 CDN 节点拉 [start,end]，按序产出字节。
+
+        实测依据：同一主机解析出 8 个 alikunlun 节点，单节点被限到 ~1-2MB/s，
+        多节点并发可叠加（3 节点实测 1.83x）。所以不是「同一 IP 多连接」，
+        而是**分发到不同节点**。
+        """
+        import queue
+        import threading
+        import urllib.parse as _up
+        u = _up.urlsplit(url)
+        host, path = u.hostname, u.path + (("?" + u.query) if u.query else "")
+        headers = dict(extra_headers or {})
+        headers.setdefault("User-Agent", UA)
+        headers.setdefault("Referer", "https://pan.quark.cn/")
+        pairs = ["%s=%s" % (c.name, c.value) for c in self._jar]
+        if pairs:
+            headers["Cookie"] = "; ".join(pairs)
+
+        total = end - start + 1
+        n = max(1, min(n or self.PARALLEL_N, max(1, total // (1024 * 1024))))
+        if n <= 1:
+            sink = queue.Queue(maxsize=64)
+            threading.Thread(target=self._fetch_range,
+                             args=(host, None, path, start, end, headers, sink),
+                             daemon=True).start()
+            yield from self._drain(sink)
+            return
+
+        ips = self._host_ips(host) or [host]
+        step = total // n
+        sinks, threads = [], []
+        for i in range(n):
+            b0 = start + i * step
+            b1 = end if i == n - 1 else (b0 + step - 1)
+            sink = queue.Queue(maxsize=32)
+            t = threading.Thread(target=self._fetch_range,
+                                 args=(host, ips[i % len(ips)], path, b0, b1, headers, sink),
+                                 daemon=True)
+            sinks.append(sink)
+            threads.append(t)
+        for t in threads:
+            t.start()
+        for sink in sinks:
+            yield from self._drain(sink)
+
+    @staticmethod
+    def _drain(sink):
+        while True:
+            item = sink.get()
+            if item is None:
+                return
+            yield item
 
     def session_header(self):
         """把取流必需的会话 Cookie 作为请求头返回。

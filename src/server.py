@@ -46,6 +46,8 @@ ANIME_FILE = os.path.join(DATA_DIR, "anime.json")
 META_FILE = os.path.join(DATA_DIR, "meta.json")
 CONFIG_FILE = os.path.join(ROOT, "config.json")
 
+UA_PROXY = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) quark-cloud-drive/3.14.2 Chrome/112.0 Safari/537.36")
 DEFAULT_LIMIT = 24
 EPISODE_TTL = 600
 
@@ -515,7 +517,7 @@ class Handler(BaseHTTPRequestHandler):
         if qtype == "input":
             return self.send_json({"list": [{"url": url,
                                              "header": self.app.quark.session_header()}]})
-        return self._proxy(url)
+        return self._proxy(url, int(query.get("z") or 0))
 
     # ---------------- 我的云盘（纯接口，可在影视仓内完成） ---------------- #
     def _cookie_ok(self):
@@ -987,7 +989,7 @@ class Handler(BaseHTTPRequestHandler):
         # 少了它播放器直连必然 412 Precondition Failed。要 302 可显式传 direct=1。
         if query.get("direct") in ("1", "true", "yes"):
             return self._redirect(url)
-        return self._proxy(url)
+        return self._proxy(url, int(query.get("z") or 0))
 
     def _redirect(self, url):
         self.send_response(302)
@@ -996,38 +998,83 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def _proxy(self, url):
-        """反代直链，支持 Range，兼容不跟随 302 的播放器"""
-        extra = {}
-        rng = self.headers.get("Range")
-        if rng:
-            extra["Range"] = rng
-        sock = None
+    def _proxy(self, url, total_size=0):
+        """把 CDN 流转发给播放器。
+
+        实测依据：同一 CDN 主机解析出 8 个 alikunlun 节点，单节点被限到 1~2MB/s，
+        玩偶哥哥抓包显示它同时连 8+ 个节点做并发。所以这里把请求的 Range 切成 N 段，
+        **分发到不同节点**并发拉取，再按序写出 —— 而不是在同一 IP 上开多连接。
+        """
         try:
-            sock = self.connection
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             try:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * 1024 * 1024)
+                self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * 1024 * 1024)
             except OSError:
                 pass
         except OSError:
             pass
+
+        # 解析客户端的 Range
+        rng = (self.headers.get("Range") or "").strip()
+        start, end = 0, None
+        is_range = False
+        if rng.startswith("bytes="):
+            part = rng[6:].split(",")[0].strip()
+            a, _, b = part.partition("-")
+            try:
+                if a:
+                    start, end = int(a), (int(b) if b else None)
+                elif b:
+                    start, end = None, int(b)
+                is_range = True
+            except ValueError:
+                start, end, is_range = 0, None, False
+
+        if end is None and total_size:
+            end = total_size - 1 if start is not None else None
+
+        headers = {"User-Agent": UA_PROXY, "Referer": "https://pan.quark.cn/"}
+
+        # Range 无法确定终点时退回单连接（保持兼容）
+        if not total_size or start is None or end is None or end < start:
+            extra = {"Range": rng} if rng else {}
+            try:
+                with self.app.quark.open_stream(url, extra) as resp:
+                    self.send_response(resp.status)
+                    for k, v in resp.headers.items():
+                        if k.lower() in ("content-type", "content-length", "content-range",
+                                         "accept-ranges", "last-modified", "etag"):
+                            self.send_header(k, v)
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    shutil.copyfileobj(resp, self.wfile, 1024 * 1024)
+            except urllib.error.HTTPError as exc:
+                self.send_json({"error": "upstream %s" % exc.code}, 502)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
+
+        length = end - start + 1
         try:
-            with self.app.quark.open_stream(url, extra) as resp:
-                self.send_response(resp.status)
-                for key, value in resp.headers.items():
-                    if key.lower() in ("content-type", "content-length", "content-range",
-                                       "accept-ranges", "last-modified", "etag"):
-                        self.send_header(key, value)
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.end_headers()
-                # 大块直拷：比 Python 里 while+read/write 小块循环快得多
-                shutil.copyfileobj(resp, self.wfile, 4 * 1024 * 1024)
-        except urllib.error.HTTPError as exc:
-            self.send_json({"error": "upstream %s" % exc.code}, 502)
+            self.send_response(206 if is_range else 200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Accept-Ranges", "bytes")
+            if is_range:
+                self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, total_size))
+            self.send_header("Content-Length", str(length))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            n = int(os.environ.get("PARALLEL_N", str(self.app.quark.PARALLEL_N)))
+            sent = 0
+            for chunk in self.app.quark.stream_ranges(url, start, end, headers, n=n):
+                self.wfile.write(chunk)
+                sent += len(chunk)
+                if sent >= length:
+                    break
         except (BrokenPipeError, ConnectionResetError):
             pass
-
+        except Exception as exc:  # noqa: BLE001
+            self.log_message("proxy error: %r", exc)
 
 def _esc(text):
     return (str(text).replace("&", "&amp;").replace("<", "&lt;")
