@@ -359,12 +359,52 @@ class Quark:
         }
 
     # ---------------- 取直链（需登录） ---------------- #
-    def _saved_fid(self, pwd_id, fid, share_token):
-        """把分享里的文件转存到自己网盘，返回转存后的 fid（带缓存）"""
+    def _fid_is_file(self, own_fid, want_name=""):
+        """判断 fid 是否真是 4k_anime/ 里的一个文件（不是文件夹）。
+
+        实测 /1/clouddrive/file 的返回结构与文档不一致，用目录列表判断最稳。
+        """
+        if not own_fid:
+            return False
+        try:
+            for f in self.list_saved():
+                if f.get("fid") == own_fid:
+                    return not f.get("dir")
+        except QuarkError:
+            return False
+        return False
+
+    def _find_saved(self, want_name, want_size=0):
+        """在 4k_anime/ 里定位转存后的文件。
+
+        优先按**精确大小**匹配（最可靠，文件名可能被改名/转义），大小对不上再退回名字比对。
+        """
+        files = self.list_saved()
+        if want_size:
+            for f in files:
+                if f.get("size") == want_size:
+                    return f.get("fid")
+        if want_name:
+            nal = re.sub(r"\s+", " ", str(want_name)).strip()
+            for f in files:
+                if re.sub(r"\s+", " ", str(f.get("file_name") or "")).strip() == nal:
+                    return f.get("fid")
+        return None
+
+    def _saved_fid(self, pwd_id, fid, share_token, want_name="", want_size=0):
+        """把分享里的文件转存到自己网盘，返回转存后的文件 fid（带缓存）"""
         ck = "saved_%s_%s" % (pwd_id, fid)
         hit = self.cache.get(ck, 86400 * 7)
         if hit:
-            return hit
+            try:
+                info = self._request("/1/clouddrive/file",
+                                     {"pr": "ucpro", "fr": "pc", "fids": hit})
+                for ent in ((info.get("data") or {}).get("list") or []):
+                    if not ent.get("dir"):
+                        return hit
+            except QuarkError:
+                pass
+            self.cache.delete(ck)
 
         to_fid = self._ensure_dir()
         resp = self._request(
@@ -389,8 +429,18 @@ class Quark:
         if not task_id:
             raise QuarkError("转存未返回 task_id")
         new_fid = self._wait_task(task_id)
-        if not new_fid:
-            raise QuarkError("转存任务未产出文件")
+
+        # 任务给的 fid 有时是目标文件夹，需要在 4k_anime/ 里按大小/名字重新定位
+        if not (new_fid and self._fid_is_file(new_fid)):
+            for _ in range(8):
+                found = self._find_saved(want_name, want_size)
+                if found:
+                    new_fid = found
+                    break
+                time.sleep(1.0)
+        if not (new_fid and self._fid_is_file(new_fid)):
+            raise QuarkError("转存后未能定位到文件%s"
+                             % (("（%s）" % want_name[:40]) if want_name else ""))
         self.cache.set(ck, new_fid)
         return new_fid
 
@@ -465,7 +515,47 @@ class Quark:
             return False
         return bool(((resp.get("data") or {}).get("list")))
 
-    def direct_url(self, pwd_id, fid, share_token=""):
+    # 画质档位：原画=源文件直链（全分辨率）；智能=夸克转码流（更省带宽）
+    QUALITY_RAW, QUALITY_SMART = "raw", "smart"
+
+    def resolve_raw(self, own_fid, purge=True):
+        """原画：file/download 直链，就是源文件本身（3840x2160 不会再被缩）。
+
+        实测：转存后拿到直链，**把转存文件删掉链接依然有效**（玩偶哥哥就是这么做的），
+        所以默认 purge=True，拿完就删，不占用户网盘空间。
+        """
+        resp = self._request("/1/clouddrive/file/download",
+                             {"pr": "ucpro", "fr": "pc", "uc_param_str": ""},
+                             {"fids": [own_fid]})
+        url = ""
+        for ent in (resp.get("data") or []):
+            if ent.get("download_url"):
+                url = ent["download_url"]
+                break
+        if not url:
+            raise QuarkError("原画取链失败：%s" % (resp.get("message") or resp.get("status")))
+        if purge:
+            try:
+                self._request("/1/clouddrive/file/delete",
+                              {"pr": "ucpro", "fr": "pc"},
+                              {"action_type": 2, "filelist": [own_fid],
+                               "exclude_fids": []})
+            except QuarkError:
+                pass
+        return url
+
+    def resolve_smart(self, own_fid):
+        """智能：夸克转码流。转码是异步的，需要文件在网盘里存在一会儿。"""
+        url, reason = None, ""
+        for attempt in range(8):
+            url, reason = self._play_stream(own_fid)
+            if url:
+                return url
+            time.sleep(1.5 if attempt < 4 else 3.0)
+        raise QuarkError("智能档转码未就绪：%s" % (reason or "unknown"))
+
+    def direct_url(self, pwd_id, fid, share_token="", quality=QUALITY_RAW,
+                   file_name="", file_size=0):
         """把分享里的某个文件解析成「播放器能拉」的地址。
 
         实测出的正确顺序（顺序错了大文件就播不了）:
@@ -478,10 +568,18 @@ class Quark:
         """
         if not self.cookie:
             raise QuarkAuthError("未配置 QUARK_COOKIE，无法取流")
+        if quality == self.QUALITY_SMART:
+            own = self._saved_fid(pwd_id, fid, share_token, file_name, file_size)
+            for _ in range(10):
+                if self._file_exists(own):
+                    break
+                time.sleep(0.8)
+            return self.resolve_smart(own)
+
         last_error = None
         # 缓存的转存 fid 可能因为用户清空了网盘而失效，这里失败就重转存一次
         for round_no in range(2):
-            own_fid = self._saved_fid(pwd_id, fid, share_token)
+            own_fid = self._saved_fid(pwd_id, fid, share_token, file_name, file_size)
 
             # 转存刚完成时文件可能还不可见，先等它出现
             for _ in range(8):
@@ -493,29 +591,24 @@ class Quark:
                 last_error = QuarkError("转存文件不可见")
                 continue
 
-            # 转码是异步的：file/play 可能还没有 video_list，多试几轮
-            reason = ""
-            for attempt in range(6):
-                url, reason = self._play_stream(own_fid)
-                if url:
-                    return url
-                time.sleep(1.5 if attempt < 3 else 3.0)
-
-            # 兜底：直链接口（必须 PC 客户端 UA，否则报 download file size limit）
+            # 原画优先：源文件直链，全分辨率。
+            # 注：这里**不能**立刻删转存 —— 删了之后夸克去重会把已删除的 fid
+            # 再返回给你，下次播放就 404。所以交给 janitor 按 SAVE_TTL 清理。
             try:
-                resp = self._request("/1/clouddrive/file/download",
-                                     {"pr": "ucpro", "fr": "pc", "uc_param_str": ""},
-                                     {"fids": [own_fid]})
+                return self.resolve_raw(own_fid, purge=False)
             except QuarkNotFound:
                 self.cache.delete("saved_%s_%s" % (pwd_id, fid))
                 last_error = QuarkError("转存记录已失效")
                 continue
-            for ent in (resp.get("data") or []):
-                if ent.get("download_url"):
-                    return ent["download_url"]
-            last_error = QuarkError("转码未就绪(%s)，直链接口也返回 %s"
-                                    % (reason or "-",
-                                       resp.get("message") or resp.get("status")))
+            except QuarkError as exc:
+                last_error = exc
+
+            # 退回转码流
+            url, reason = self._play_stream(own_fid)
+            if url:
+                return url
+            last_error = QuarkError("原画与转码都失败：%s / %s"
+                                    % (last_error, reason or "-"))
             break
         raise last_error or QuarkError("取流失败")
 
@@ -529,6 +622,18 @@ class Quark:
                               "_sort": "file_type:asc,file_name:asc"})
         return [f for f in ((resp.get("data") or {}).get("list") or [])
                 if not f.get("dir")]
+
+    def purge_older_than(self, seconds):
+        """删掉 4k_anime/ 里超过 seconds 秒的转存文件（智能档转码需要文件留存一会儿）"""
+        files = self.list_saved()
+        cutoff = time.time() * 1000 - seconds * 1000
+        stale = [f for f in files if (f.get("created_at") or f.get("updated_at") or 0) < cutoff]
+        if not stale:
+            return 0
+        self._request("/1/clouddrive/file/delete", {"pr": "ucpro", "fr": "pc"},
+                      {"action_type": 2, "filelist": [f["fid"] for f in stale],
+                       "exclude_fids": []})
+        return len(stale)
 
     def clear_saved(self):
         """清空 4k_anime/ 转存目录，返回删除数量"""

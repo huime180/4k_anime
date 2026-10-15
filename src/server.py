@@ -111,6 +111,24 @@ class App:
         self._by_type = {}
         self._by_id = {}
         self._reindex()
+        self._start_janitor()
+
+    def _start_janitor(self):
+        """后台定期清理转存目录（原画档拿完即删，智能档转码需要文件留存）"""
+        ttl = int(os.environ.get("SAVE_TTL", "7200"))
+
+        def run():
+            while True:
+                time.sleep(1800)
+                try:
+                    if self.quark.cookie:
+                        n = self.quark.purge_older_than(ttl)
+                        if n:
+                            print("[janitor] 清理 %d 个转存文件（超过 %ds）" % (n, ttl))
+                except Exception:
+                    pass
+
+        threading.Thread(target=run, daemon=True).start()
 
     @staticmethod
     def _load(path, default):
@@ -180,12 +198,14 @@ class App:
         self._episodes[item["id"]] = (now, eps)
         return eps
 
-    def play_url(self, item, ep, base):
+    def play_url(self, item, ep, base, quality="raw"):
         q = urllib.parse.urlencode({
             "pwd": item.get("pwd_id", ""),
             "fid": ep["fid"],
             "ft": ep.get("share_fid_token", ""),
+            "q": quality,
             "n": ep.get("file_name", ""),
+            "z": ep.get("size", 0),
         })
         return "%s/play?%s" % (base.rstrip("/"), q)
 
@@ -203,12 +223,14 @@ class App:
         return "第%02d集" % (index + 1)
 
     def play_list(self, item, base):
+        """返回 原画$$$智能 两组播放列表（对齐玩偶哥哥的画质选择）"""
         eps = self.episodes(item)
-        rows = []
+        raw_rows, smart_rows = [], []
         for idx, ep in enumerate(eps):
-            rows.append("%s$%s" % (self.episode_label(ep, idx),
-                                   self.play_url(item, ep, base)))
-        return rows
+            label = self.episode_label(ep, idx)
+            raw_rows.append("%s$%s" % (label, self.play_url(item, ep, base, "raw")))
+            smart_rows.append("%s$%s" % (label, self.play_url(item, ep, base, "smart")))
+        return "%s$$$%s" % ("#".join(raw_rows), "#".join(smart_rows))
 
 
 # --------------------------------------------------------------------------- #
@@ -776,8 +798,8 @@ class Handler(BaseHTTPRequestHandler):
         detail = self._vod_brief(it, base)
         detail.update({
             "vod_content": self.app.summary(it),
-            "vod_play_from": "4k_anime",
-            "vod_play_url": "#".join(self.app.play_list(it, base)),
+            "vod_play_from": "原画$$$智能",
+            "vod_play_url": self.app.play_list(it, base),
             "vod_area": it.get("category") or "",
             "vod_lang": "日语",
             "vod_director": "",
@@ -860,8 +882,14 @@ class Handler(BaseHTTPRequestHandler):
         ft = query.get("ft") or query.get("token") or ""
         if not (pwd and fid):
             return self.send_json({"error": "missing pwd/fid"}, 400)
+        quality = (query.get("q") or "raw").lower()
+        if quality not in ("raw", "smart"):
+            quality = "raw"
         try:
-            url = self.app.quark.direct_url(pwd, fid, ft)
+            url = self.app.quark.direct_url(
+                pwd, fid, ft, quality=quality,
+                file_name=query.get("n", ""),
+                file_size=int(query.get("z") or 0))
         except QuarkAuthError as exc:
             return self.send_json({"parse": 0, "url": "", "error": str(exc)}, 401)
         except QuarkError as exc:
@@ -879,8 +907,14 @@ class Handler(BaseHTTPRequestHandler):
         ft = query.get("ft") or ""
         if not (pwd and fid):
             return self.send_json({"error": "missing pwd/fid"}, 400)
+        quality = (query.get("q") or "raw").lower()
+        if quality not in ("raw", "smart"):
+            quality = "raw"
         try:
-            url = self.app.quark.direct_url(pwd, fid, ft)
+            url = self.app.quark.direct_url(
+                pwd, fid, ft, quality=quality,
+                file_name=query.get("n", ""),
+                file_size=int(query.get("z") or 0))
         except QuarkAuthError as exc:
             return self.send_json({"error": str(exc)}, 401)
         except QuarkError as exc:

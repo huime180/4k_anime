@@ -88,7 +88,7 @@ python3 src/server.py --port 8787
 | ① 夸克账号状态 | 详情页直接显示昵称 / 会员等级 / 容量 |
 | ② 扫码登录夸克 | **详情页封面就是二维码**，用夸克 App 扫它；服务端后台自动轮询，扫完即登录 |
 | ③ 清除夸克账号 | 删掉 `config.json` 里的 Cookie，立即生效 |
-| ④ 清空转存缓存 | 删除 `4k_anime/` 目录（播放要转存文件占空间，看完可清理） |
+| ④ 清空转存缓存 | 删除 `4k_anime/` 目录（播放要转存文件占空间；另有后台 TTL 自动清理） |
 
 不需要打开任何网页；`/login` 网页版仍然保留，命令行也有 `python3 src/quark_login.py`。
 
@@ -257,28 +257,39 @@ Bangumi 返回的封面在 `lain.bgm.tv`，实测这个 **图片 CDN 在部分�
 
 ### 播放链路（踩了很多坑，结论如下）
 
+**画质分两档，对齐玩偶哥哥的「原画 / 智能」：**
+
+| 档位 | 来源 | 说明 |
+| --- | --- | --- |
+| **原画** | `POST /file/download` 直链 | **源文件本体**（4K 就是 3840×2160），MKV/MP4 原封装 |
+| **智能** | `GET /file/play` 转码流 | 夸克转码（会缩分辨率，省带宽） |
+
+> 早先只用了转码档，4K 源被缩成 1440×810（正好 1/4），看着就"糊"。现在默认原画。
+
 ```
 token → detail(列目录/按番名定位文件夹) → save(转存到自己网盘)
-      → task(等转存完成)
-      → /file/play?resolution=raw → data.video_list[].url   ← 真正能播的地址
+      → task(等转存完成) → 在 4k_anime/ 里按**精确大小**定位出真正的文件 fid
+      → 原画: /file/download  → dl-pc-*.drive.quark.cn
+      → 智能: /file/play      → video-play-*.drive.quark.cn
       → 服务端代理拉流（必须带会话 Cookie）
 ```
 
-四个**必须**，少一个就播不了（都是实测踩出来的）：
+**必须注意的几个坑（全是实测踩出来的）：**
 
-1. **必须走 `/file/play` 转码接口**，不能靠 `file/download`。
-   `file/download` 对分享文件和大文件一律返回 `400 download file size limit`。
-2. **必须先把文件转存到自己网盘**。`/file/play` 直接对分享 fid 调会返回 `500 inner error`。
-   转存结果做 7 天缓存，不会重复转存；缓存的 fid 失效会自动重转存。
-3. **必须用夸克 PC 客户端的 UA**（`quark-cloud-drive/3.14.2 …`）。
-   换成浏览器 UA 调 `file/download`，同一个 1.8GB 文件会报 `download file size limit`。
-4. **必须由服务端代理拉流，不能让播放器直连**。
-   夸克 CDN 会校验取流请求里的会话 Cookie（取链时下发的 `__pugs`），
-   缺了直接 `412 Precondition Failed` —— 所以 `/play` 默认是代理，
-   要 302 得显式传 `direct=1`。
+1. **必须用 `/file/play` 或 `file/download` + PC 客户端 UA**。浏览器 UA 调 `file/download` 对大文件报
+   `400 download file size limit`；换 `quark-cloud-drive/3.14.2 …` 就 200。
+2. **转码/直链都要求文件在自己网盘**。`/file/play` 对分享 fid 直接 `500 inner error`。
+3. **CDN 校验会话 Cookie（`__pugs`）**，缺了必 `412 Precondition Failed` ⇒
+   `/play` 默认服务端代理，要 302 得显式 `direct=1`。
+4. **任务返回的 fid 不可信**：`save_as_top_fids` 有时给的是**目标文件夹**的 fid；
+   `/1/clouddrive/file?fids=` 这个接口**根本不认 fids 参数**（会返回别的文件）。
+   所以定位文件一律走 `/file/sort` 列目录 + **按大小精确匹配**。
+5. **拿到链接后不能立刻删转存**。删了之后夸克去重会把**已删除的 fid 再返回**给你，
+   下次播放直接 404。改成由 janitor 按 `SAVE_TTL`（默认 2 小时）自动清理。
 
-> 转码是**异步**的：刚转存完 `video_list` 还是空的，代码里会等文件可见并重试几轮，
-> 再退回 `file/download`。所以第一次播某集可能要等两三秒。
+> 智能档转码是**异步**的，刚转存完 `video_list` 还是空的，代码会等文件可见并重试几轮。
+> 原画档是即时的。转存目录由后台 janitor 按 `SAVE_TTL`（默认 7200 秒）自动清理，
+> 也可以在「我的云盘┃配置 → ④ 清空转存缓存」手动清。
 
 ---
 
