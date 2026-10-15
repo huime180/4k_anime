@@ -636,6 +636,16 @@ class Quark:
             time.sleep(1.5 if attempt < 4 else 3.0)
         raise QuarkError("智能档转码未就绪：%s" % (reason or "unknown"))
 
+    # 解析结果缓存：玩偶哥哥反编译出来的字段就叫 lastQuarkPlayUrl / lastQuarkDownloadUrl，
+    # 说明它会把上次解析到的地址留着复用，省掉每次 2 秒多的转存+取链。
+    PLAY_CACHE_TTL = 1800
+
+    def _cached_play(self, key):
+        return self.cache.get("play_" + key, self.PLAY_CACHE_TTL)
+
+    def _cache_play(self, key, url):
+        self.cache.set("play_" + key, url)
+
     def direct_url(self, pwd_id, fid, share_token="", quality=QUALITY_RAW,
                    file_name="", file_size=0):
         """把分享里的某个文件解析成「播放器能拉」的地址。
@@ -650,6 +660,10 @@ class Quark:
         """
         if not self.cookie:
             raise QuarkAuthError("未配置 QUARK_COOKIE，无法取流")
+        ck = "%s_%s_%s" % (pwd_id, fid, quality)
+        hit = self._cached_play(ck)
+        if hit:
+            return hit
         if quality == self.QUALITY_SMART:
             own = self._saved_fid(pwd_id, fid, share_token, file_name, file_size)
             for _ in range(10):
@@ -666,7 +680,9 @@ class Quark:
                 try:
                     own_fid, sub = self._save_to_temp(pwd_id, fid, share_token,
                                                       file_name, file_size)
-                    return self.resolve_raw(own_fid, purge=False)
+                    url = self.resolve_raw(own_fid, purge=False)
+                    self._cache_play(ck, url)
+                    return url
                 except QuarkError as exc:
                     last = exc
                     time.sleep(0.8)
