@@ -822,13 +822,26 @@ class Quark:
     PARALLEL_N = int(os.environ.get("PARALLEL_N", "4"))
     PARALLEL_CHUNK = 8 * 1024 * 1024
 
+    # 是否优先 IPv6：实测本机国内出口是 IPv6（移动），而 CDN 的 IPv4 是电信节点，
+    # 跨运营商走 IPv4 只有 1~2MB/s，走 IPv6 能到 8~13MB/s。默认优先 IPv6。
+    PREFER_IPV6 = os.environ.get("PREFER_IPV6", "1") not in ("0", "false", "no")
+
     def _host_ips(self, host):
-        """解析出该 CDN 主机的全部 IPv4（用于多节点分发）"""
+        """解析 CDN 主机的候选 IP，**IPv6 优先**（可多节点分发）"""
+        v6, v4 = [], []
         try:
-            infos = socket.getaddrinfo(host, 443, socket.AF_INET)
-            return sorted({i[4][0] for i in infos})
+            for i in socket.getaddrinfo(host, 443, socket.AF_INET6):
+                if i[4][0] not in v6:
+                    v6.append(i[4][0])
         except OSError:
-            return []
+            pass
+        try:
+            for i in socket.getaddrinfo(host, 443, socket.AF_INET):
+                if i[4][0] not in v4:
+                    v4.append(i[4][0])
+        except OSError:
+            pass
+        return (v6 + sorted(v4)) if (self.PREFER_IPV6 and v6) else (sorted(v4) + v6)
 
     def _fetch_range(self, host, ip, path, start, end, headers, sink):
         """从指定 IP 拉 [start,end]，边收边塞进 sink（queue），结束塞 None"""
@@ -836,6 +849,8 @@ class Quark:
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
+            if ip is None:
+                ip = (self._host_ips(host) or [host])[0]
             raw = socket.create_connection((ip, 443), timeout=20)
             ss = ctx.wrap_socket(raw, server_hostname=host)
             req = ["GET %s HTTP/1.1" % path, "Host: " + host]
@@ -855,7 +870,7 @@ class Quark:
             if body_start:
                 sink.put(body_start)
             while True:
-                d = ss.recv(262144)
+                d = ss.recv(512 * 1024)
                 if not d:
                     break
                 sink.put(d)
@@ -887,7 +902,7 @@ class Quark:
         total = end - start + 1
         n = max(1, min(n or self.PARALLEL_N, max(1, total // (1024 * 1024))))
         if n <= 1:
-            sink = queue.Queue(maxsize=64)
+            sink = queue.Queue(maxsize=8)
             threading.Thread(target=self._fetch_range,
                              args=(host, None, path, start, end, headers, sink),
                              daemon=True).start()
@@ -900,7 +915,7 @@ class Quark:
         for i in range(n):
             b0 = start + i * step
             b1 = end if i == n - 1 else (b0 + step - 1)
-            sink = queue.Queue(maxsize=32)
+            sink = queue.Queue(maxsize=8)
             t = threading.Thread(target=self._fetch_range,
                                  args=(host, ips[i % len(ips)], path, b0, b1, headers, sink),
                                  daemon=True)

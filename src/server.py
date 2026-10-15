@@ -1066,11 +1066,23 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             n = int(os.environ.get("PARALLEL_N", str(self.app.quark.PARALLEL_N)))
             sent = 0
+            buf = []
+            buflen = 0
             for chunk in self.app.quark.stream_ranges(url, start, end, headers, n=n):
-                self.wfile.write(chunk)
+                buf.append(chunk)
+                buflen += len(chunk)
                 sent += len(chunk)
+                # 攒到 2MB 一次写出，减少系统调用次数
+                if buflen >= 2 * 1024 * 1024:
+                    self.wfile.write(b"".join(buf))
+                    self.wfile.flush()
+                    buf, buflen = [], 0
                 if sent >= length:
                     break
+            if buf:
+                self.wfile.write(b"".join(buf))
+                self.wfile.flush()
+
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as exc:  # noqa: BLE001
