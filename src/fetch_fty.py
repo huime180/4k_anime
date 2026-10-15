@@ -51,18 +51,23 @@ JAR_DIR = os.path.join(ROOT, "jar")
 
 
 def jar_spec(url: str, filename: str) -> str:
-    """给 jar 地址带上 `;md5;<md5>`。
+    """jar 地址：**文件名里带内容 md5**，再带 `;md5;<md5>`。
 
-    App 靠这个 md5 判断缓存是否过期：jar 内容一变（我们每次重建都会变），
-    带上新的 md5 它才会重新下载 —— 否则一直用旧的缓存 jar
-    （表现就是「线路表里还是旧的名字，比如 夸父原1/夸父智1」）。
+    为什么文件名也要带 md5：App 会缓存配置和 jar，两边刷新时间不一样。
+    以前文件名固定（…merged.jar），旧配置声明旧 md5、线上 jar 已经换了新的，
+    App 校验不过就**拒绝加载 spider**（表现：所有线路没有分类 / 视频线路加载失败）。
+    现在每个内容都对应一个**唯一文件名**，旧配置指向旧文件、新配置指向新文件，
+    任何缓存组合都能自洽。
     """
     path = os.path.join(JAR_DIR, filename)
     try:
         with open(path, "rb") as fh:
-            return url + ";md5;" + hashlib.md5(fh.read()).hexdigest()
+            md5 = hashlib.md5(fh.read()).hexdigest()
     except OSError:
         return url
+    stem, ext = os.path.splitext(os.path.basename(filename))
+    base = url.rsplit("/", 1)[0]                       # …/jar
+    return "%s/h/%s.%s%s;md5;%s" % (base, stem, md5, ext, md5)
 
 
 def gh_wrap(url: str) -> str:

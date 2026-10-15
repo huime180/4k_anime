@@ -56,4 +56,11 @@ mkdir -p pack/META-INF && cp "$FTY"/META-INF/MANIFEST.MF pack/META-INF/ 2>/dev/n
 mkdir -p "$ROOT/jar"
 python3 "$ROOT/src/pack_jar.py" pack "$ROOT/jar/4k_anime_fty_merged.jar" \
   classes.dex META-INF/MANIFEST.MF $(cd pack && ls assets/*.so assets/*.guard | sed 's|^|&|')
-echo "✅ 产出 jar/4k_anime_fty_merged.jar"
+# 再存一份「文件名里带内容 md5」的副本：配置里引用的就是它。
+# 这样即使 App 缓存里是**旧配置**，它指向的也是"和它自己声明的 md5 完全相同"的那个文件，
+# 不会出现「配置旧 / jar 新」→ 校验失败 → spider 不加载 → 所有线路没分类。
+mkdir -p "$ROOT/jar/h"
+MD5=$(md5sum "$ROOT/jar/4k_anime_fty_merged.jar" | cut -d' ' -f1)
+cp -f "$ROOT/jar/4k_anime_fty_merged.jar" "$ROOT/jar/h/4k_anime_fty_merged.$MD5.jar"
+ls -1t "$ROOT/jar/h"/4k_anime_fty_merged.*.jar 2>/dev/null | tail -n +4 | xargs -r rm -f
+echo "✅ 产出 jar/4k_anime_fty_merged.jar（内容 md5=$MD5，副本 jar/h/4k_anime_fty_merged.$MD5.jar）"

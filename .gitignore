@@ -31,3 +31,5 @@ spider/out/
 spider/dex/
 spider/pack/
 spider/testout/
+
+# jar 历史副本：只保留最近几个（由 build_spider.sh 自己裁剪后提交）
