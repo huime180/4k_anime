@@ -1,0 +1,6 @@
+{
+  "_说明": "复制为 config.json 后填写；config.json 已在 .gitignore 中，不会被提交",
+  "quark_cookie": "你的夸克 Cookie，形如 __puus=xxxx; __pus=yyyy; ...",
+  "host": "0.0.0.0",
+  "port": 8787
+}

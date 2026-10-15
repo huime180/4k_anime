@@ -1,0 +1,11 @@
+# 本地私密配置（含夸克 Cookie），绝不提交
+config.json
+.env
+*.local.json
+
+# 运行期缓存
+data/cache/
+__pycache__/
+*.pyc
+*.log
+.DS_Store

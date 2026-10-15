@@ -1,0 +1,72 @@
+name: 同步表格并发布
+
+on:
+  schedule:
+    # 每 30 分钟自动同步一次表格
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - "src/**"
+      - ".github/workflows/sync.yml"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: sync-4k-anime
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 同步在线表格
+        run: python3 src/sync_table.py
+
+      - name: 补全封面与简介（Bangumi）
+        run: python3 src/enrich.py
+        continue-on-error: true
+
+      - name: 生成 TVBox 配置与静态页面
+        env:
+          PUBLIC_BASE: ${{ vars.PUBLIC_BASE }}
+        run: |
+          BASE="${PUBLIC_BASE:-http://127.0.0.1:8787}"
+          python3 src/build_config.py --base "$BASE"
+
+      - name: 提交数据变更
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "本次同步无变化"
+          else
+            git commit -m "chore(sync): 同步表格 $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git push
+          fi
+
+      - name: 打包静态站点
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: sync
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
