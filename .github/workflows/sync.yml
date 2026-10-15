@@ -9,6 +9,7 @@ on:
     branches: [ main ]
     paths:
       - "src/**"
+      - "spider/**"          # 改了 spider 源码就重建合并 jar（否则不触发任何运行）
       - ".github/workflows/sync.yml"
 
 permissions:
