@@ -146,7 +146,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default=os.environ.get("PUBLIC_BASE", "http://127.0.0.1:8787"),
                         help="接口服务的对外地址，例如 https://anime.example.com")
-    parser.add_argument("--out", default=os.path.join(PUBLIC_DIR, "4k_anime.json"))
+    parser.add_argument("--out", default=os.path.join(ROOT, "config", "4k_anime.json"))
     args = parser.parse_args()
 
     os.makedirs(PUBLIC_DIR, exist_ok=True)

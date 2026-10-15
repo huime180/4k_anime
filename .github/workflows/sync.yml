@@ -38,9 +38,10 @@ jobs:
         run: python3 src/enrich.py
         continue-on-error: true
 
-      - name: 自动解析饭太硬配置并插入 4k动漫线路
+      - name: 自动解析饭太硬配置并插入 4k动漫线路（A/B 两份）
         env:
           PUBLIC_BASE: ${{ vars.PUBLIC_BASE }}
+          DATA_BASE: ${{ vars.DATA_BASE }}
         continue-on-error: true
         run: |
           # 抓不到时脚本会保留现有配置不覆盖，所以这里失败不影响后面

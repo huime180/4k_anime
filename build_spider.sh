@@ -32,7 +32,7 @@ rm -rf out dex pack && mkdir -p out dex pack/assets
 
 # 2) d8：饭太硬 loader dex + 我们自己的类（只喂 com/github/catvod/spider 下属于我们的）
 "$JDK/bin/java" -cp "$T/r8.jar" com.android.tools.r8.D8 --min-api 21 --output dex \
-  "$FTY/classes.dex" $(find out/com/github/catvod/spider -maxdepth 1 -name 'Anime4KGuard*.class')
+  "$FTY/classes.dex" $(find out/com/github/catvod/spider -maxdepth 1 \( -name 'Anime4KGuard*.class' -o -name 'Quark4K*.class' \))
 
 # 3) 连 .so 与加密 .guard 一起重打包
 cp dex/classes.dex pack/

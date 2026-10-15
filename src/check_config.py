@@ -23,7 +23,7 @@ JAR = os.path.join(ROOT, "jar", "4k_anime_fty_merged.jar")
 
 # 这些类是**我们**加的，缺了就是硬错误；饭太硬自家的 csp_*Guard 缺了只提示
 # （官方配置里就有 csp_XPathGuard 而官方 jar 里也没有，app 会跳过那一条线）
-OUR_CLASSES = {"Anime4KGuard"}
+OUR_CLASSES = {"Anime4KGuard", "Quark4K"}
 
 
 def dex_classes(blob: bytes) -> set:

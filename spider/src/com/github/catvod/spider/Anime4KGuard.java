@@ -13,32 +13,25 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 4K动漫 · 夸克 spider（配置里写 csp_Anime4KGuard）
+ * 4K动漫 · 配置 A：**解析全部交给饭太硬 jar 自己那套夸克实现**（配置里写 csp_Anime4KGuard）
  *
- * 默认行为＝和玩偶哥哥完全一致：**详情/播放都直接调用饭太硬 jar 里那套夸克解析**
- * （com.github.catvod.spider.Cloud_quark，运行在解密 dex 的子 DexClassLoader 里，
- * 只能经 Init.loader() 拿到），线路名就是它的 夸父原 / 夸父智，
- * 播放地址是 app 本地代理形态 http://127.0.0.1:<端口>/proxy/play/夸父盘/...，
- * 播放器不需要任何 header。会话（Cookie/扫码登录）由饭太硬那套负责。
- *
- * 目录数据仍然是我们自己的：GitHub 上的静态 anime.json。
- *
- * 可选兜底：ext 里加 "fallback": true 时，才启用自带的极简夸克客户端
- * （自己转存 + 取流，线路名同样是 夸父原/夸父智，但返回 CDN 直链 + header，
- * 需要播放器把 Cookie 带上）。默认关闭。
+ * 目录数据是我们自己的静态 anime.json（可以挂在 Cloudflare Pages，站点本身不含解析）。
+ * 详情/播放则直接调用解密 dex 里的 com.github.catvod.spider.Cloud_quark：
+ *   * 线路名、播放地址原样透传 -> 就是玩偶哥哥那种
+ *     http://127.0.0.1:<端口>/proxy/play/夸父盘/... 代理直链，播放器不需要 header；
+ *   * 会话（Cookie / 扫码登录）由饭太硬那套负责：在「🗂我的云盘┃配置」里扫码最省事；
+ *   * 可选：ext 里给 "session": "http://…/Cloud-drive.txt"（返回 {"quarkCookie": …} 的地址），
+ *     就会用它初始化一次，省掉扫码。不给就纯靠 jar 自己的登录态。
  */
 public class Anime4KGuard extends Spider {
 
     private static final String PC_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             + "AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/3.14.2 "
             + "Chrome/112.0.5615.165 Electron/24.4.1 Safari/537.36";
-    private static final String API = "https://drive-pc.quark.cn/1/clouddrive";
-    private static final String SAVE_DIR = "4k_anime";
 
-    // 数据源回退链：ext 里的 data / data2 / data3 -> 本机服务 -> GitHub raw
+    // 目录数据回退链：ext.data / data2 / data3 -> 本机服务(可选) -> GitHub raw
     private static final String LOCAL_DATA = "http://192.168.1.102:8787/anime.json";
     private static final String RAW_DATA =
             "https://raw.githubusercontent.com/huime180/4k_anime/main/public/anime.json";
@@ -46,23 +39,16 @@ public class Anime4KGuard extends Spider {
 
     private Context appContext = null;   // 转发给饭太硬自己的实现用
     private String extRaw = "";          // ext 原文，原样透传
+    private String sessionUrl = "";      // 可选：ext.session，指向返回 {"quarkCookie": …} 的地址
     private Spider realQuark = null;     // 当前生效的 Cloud_quark 实例
     private Spider realPlain = null;     // 用配置 ext 原样初始化的实例（优先）
-    private Spider realMine = null;      // 配置里没会话时，用本机 /Cloud-drive.txt 补出来的实例
-    private boolean plainTried = false, mineTried = false;
-    private String realReason = "未尝试";   // 饭太硬原生那条路失败的原因（写进详情，方便排查）
-    private String cookie = "";
+    private Spider realSession = null;   // 配置里没会话时，用 ext.session 补出来的实例
+    private boolean plainTried = false, sessionTried = false;
+    private String realReason = "未尝试";   // 饭太硬原生那条失败的原因（写进详情，方便排查）
     private String dataUrl = "";
-    private String serverUrl = "";
-    private static final String SERVER_DATA = "http://192.168.1.102:8787";
-    private String saveDirFid = null;
-    private long puusTryAt = 0;
 
     private static String dataCache = null;
     private static long dataCacheAt = 0;
-    private final Map<String, String> stokenCache = new ConcurrentHashMap<String, String>();
-    private final Map<String, String> savedCache = new ConcurrentHashMap<String, String>();
-    private final Map<String, Integer> savedAt = new ConcurrentHashMap<String, Integer>();
 
     /* ===================== Spider 生命周期 ===================== */
 
@@ -71,103 +57,25 @@ public class Anime4KGuard extends Spider {
         try {
             appContext = context;
             extRaw = ext == null ? "" : ext.trim();
-            if (ext != null && ext.trim().startsWith("{")) {
-                J o = J.parse(ext);
-                cookie = o.str("cookie");
+            if (extRaw.startsWith("{")) {
+                J o = J.parse(extRaw);
                 dataUrl = o.str("data");
-                // 多源回退：跨境时 GitHub Pages 常拉不到，这里可配备用地址
                 String d2 = o.str("data2"), d3 = o.str("data3");
                 if (!d2.isEmpty()) extraUrls.add(d2);
                 if (!d3.isEmpty()) extraUrls.add(d3);
-            } else if (ext != null && !ext.trim().isEmpty()) {
-                dataUrl = ext.trim();
+                sessionUrl = o.str("session");
+            } else if (!extRaw.isEmpty()) {
+                dataUrl = extRaw;
             }
-            // 兜底源：本机服务 -> GitHub raw
             extraUrls.add(LOCAL_DATA);
             extraUrls.add(RAW_DATA);
-            // 默认（ext 没写 "fallback": true）不碰自家那套：
-            // 取流全交给饭太硬原生，所以不需要我们的 cookie，也不需要 __puus。
-            if (!fallbackOn()) return;
-            if (cookie != null && !cookie.contains("pus")) cookie = "";
-            // cookie 没填或还是占位符时，去服务端 /api/session 自动取
-            if (!authed() || cookie.startsWith("\u2190") || cookie.contains("贴")) {
-                String auto = fetchCookieFromServer();
-                if (auto != null && !auto.isEmpty()) cookie = auto;
-            }
-            ensurePuus();   // 二维码登录拿到的 cookie 里没有 __puus，缺了 CDN 全 412
         } catch (Throwable t) {
             // 配置坏了不该让 app 崩
         }
     }
 
-    /**
-     * 补上 __puus —— 夸克 CDN 直链的通行证。
-     *
-     * 2026-10 实测：GET /1/clouddrive/config 会在 Set-Cookie 里下发
-     * __puus=<...>; Max-Age=86400。缺了它，file/download 直链和 /file/play
-     * 出来的转码 m3u8 一律「412 Precondition Failed」——现象就是「条目能显示、
-     * 一点播放就失败」。所以每次播放前都确保带上。
-     */
-    private void ensurePuus() {
-        if (cookie == null || cookie.isEmpty()) return;
-        if (cookie.contains("__puus=")) return;
-        long now = System.currentTimeMillis();
-        if (now - puusTryAt < 60000) return;      // 失败退避 60s
-        puusTryAt = now;
-        try {
-            HttpURLConnection c = (HttpURLConnection)
-                    new URL(API + "/config?pr=ucpro&fr=pc").openConnection();
-            c.setConnectTimeout(12000);
-            c.setReadTimeout(15000);
-            c.setRequestProperty("User-Agent", PC_UA);
-            c.setRequestProperty("Referer", "https://pan.quark.cn/");
-            c.setRequestProperty("Cookie", cookie);
-            Map<String, List<String>> hs = c.getHeaderFields();
-            StringBuilder add = new StringBuilder();
-            for (Map.Entry<String, List<String>> e : hs.entrySet()) {
-                if (e.getKey() == null || !"set-cookie".equalsIgnoreCase(e.getKey())) continue;
-                for (String line : e.getValue()) {
-                    int eq = line.indexOf('=');
-                    if (eq <= 0) continue;
-                    int semi = line.indexOf(';');
-                    String name = line.substring(0, eq).trim();
-                    String val = line.substring(eq + 1, semi < 0 ? line.length() : semi).trim();
-                    if (name.isEmpty() || val.isEmpty() || cookie.contains(name + "=")) continue;
-                    add.append("; ").append(name).append('=').append(val);
-                }
-            }
-            InputStream in = c.getInputStream();     // 响应体没用，但需要走完请求
-            if (in != null) in.close();
-            if (add.length() > 0) cookie = cookie + add.toString();
-        } catch (Throwable ignore) {
-            // 拿不到就照旧，播放时会如实报错
-        }
-    }
-
     @Override
     public void init(Context context) { }
-
-    private boolean authed() { return cookie != null && cookie.length() > 0; }
-
-    /** 从服务端 /api/session 取当前夸克会话（省得把 cookie 手写进配置） */
-    private String fetchCookieFromServer() {
-        java.util.List<String> servers = new java.util.ArrayList<String>();
-        if (serverUrl != null && !serverUrl.isEmpty()) servers.add(serverUrl);
-        servers.add(SERVER_DATA.length() > 0 ? SERVER_DATA : "");
-        servers.add("http://192.168.1.102:8787");
-        for (String base : servers) {
-            if (base == null || base.isEmpty()) continue;
-            try {
-                String body = http("GET", base.replaceAll("/+$", "") + "/api/session",
-                        null, null, null);
-                if (body != null && body.contains("cookie")) {
-                    String ck = J.parse(body).str("cookie");
-                    if (ck != null && ck.contains("pus")) return ck;
-                }
-            } catch (Throwable ignore) { }
-        }
-        return "";
-    }
 
     /** 目录数据（静态 anime.json），带 10 分钟内存缓存 */
     private J data() throws Exception {
@@ -190,7 +98,7 @@ public class Anime4KGuard extends Spider {
                 last = e;
             }
         }
-        if (dataCache != null) return J.parse(dataCache);   // 有旧缓存就用旧的
+        if (dataCache != null) return J.parse(dataCache);
         throw last == null ? new Exception("no data source") : last;
     }
 
@@ -200,8 +108,7 @@ public class Anime4KGuard extends Spider {
     public String homeContent(boolean filter) {
         try {
             J d = data();
-            // 注意：这里要把 anime.json 里的分类**全部**给出去（A 版 CMS 也是全给 19 个），
-            // 只给 type_pid=0 的顶层分类会让 app 里少一大截分类。
+            // 分类要**全给**（和 A 版 CMS 一致），只给 type_pid=0 的顶层会让 app 里少一大截
             StringBuilder sb = new StringBuilder("{\"class\":[{\"type_id\":\"4k_all\",\"type_name\":\"全部\"}");
             for (J c : d.arr("classes")) {
                 sb.append(",{\"type_id\":").append(J.q(c.str("type_id")))
@@ -209,7 +116,6 @@ public class Anime4KGuard extends Spider {
                   .append(",\"type_pid\":").append(J.q(c.str("type_pid").isEmpty() ? "0" : c.str("type_pid")))
                   .append("}");
             }
-            // 首页也要给出条目，否则客户端看起来「4k动漫为空」
             List<J> all = d.arr("items");
             sb.append("],\"list\":[");
             for (int i = 0; i < Math.min(24, all.size()); i++) {
@@ -283,14 +189,8 @@ public class Anime4KGuard extends Spider {
                 + "}";
     }
 
-    /* ===================== 详情：交给饭太硬原生的夸克解析 ===================== */
+    /* ===================== 详情 / 播放：全交给饭太硬原生 ===================== */
 
-    /**
-     * 只给饭太硬原生那两档（夸父原 / 夸父智），和玩偶哥哥完全一致：
-     * 我们自己那套「原画/智能」直链列表**默认不出**（实测在影视仓里播放器不带
-     * header，直链一律 412，不如不给）。真想留作兜底，可以在 ext 里加
-     * `"fallback": true`，那时才会追加同名两档（走我们自己的取流）。
-     */
     @Override
     public String detailContent(List<String> ids) {
         try {
@@ -301,122 +201,46 @@ public class Anime4KGuard extends Spider {
             String pwd = item.str("pwd_id");
             if (pwd.isEmpty()) return fail("该条目不是夸克分享（网盘：" + item.str("drive_name") + "）");
 
-            // 饭太硬原生那条（和玩偶哥哥同一条路）：/proxy/play/... 代理直链
             String[] theirs = realDetail(pwd);
-            String from, url, src;
-            if (theirs != null) {
-                from = theirs[0];
-                url = theirs[1];
-                src = "饭太硬原生(" + from.replace("$$$", "/") + ")";
-            } else if (fallbackOn()) {
-                // 兜底（默认关）：自己枚举剧集 + 自己的取流，名字仍用夸父原/夸父智
-                String[] mine = ownPlayList(pwd, item.str("name"));
-                if (mine == null) return fail("两套解析都没出播放列表（饭太硬：" + realReason + "；自带：没找到视频文件）");
-                from = mine[0];
-                url = mine[1];
-                src = "自带同名两档（饭太硬原生不可用：" + realReason + "）";
-            } else {
+            if (theirs == null) {
                 return fail("饭太硬原生解析没出播放列表：" + realReason
-                        + "。先在「🗂我的云盘┃配置」里扫码登录夸克，或让本机 server.py 提供有效会话");
+                        + "。先在「🗂我的云盘┃配置」里扫码登录夸克，或在 ext 里给一个 session 地址");
             }
             return "{\"list\":[{\"vod_id\":\"4k:" + Json.esc(id) + "\""
                     + ",\"vod_name\":" + J.q(item.str("name"))
                     + ",\"vod_pic\":" + J.q(item.str("vod_pic"))
                     + ",\"vod_content\":" + J.q("画质 " + item.str("resolution")
-                        + " ｜ 修复 " + item.str("model") + " ｜ 解析：" + src)
-                    + ",\"vod_play_from\":" + J.q(from)
-                    + ",\"vod_play_url\":" + J.q(url)
+                        + " ｜ 修复 " + item.str("model")
+                        + " ｜ 解析：饭太硬原生(" + theirs[0].replace("$$$", "/") + ")")
+                    + ",\"vod_play_from\":" + J.q(theirs[0])
+                    + ",\"vod_play_url\":" + J.q(theirs[1])
                     + "}]}";
         } catch (Throwable t) {
             return fail("详情解析失败：" + t.getMessage());
         }
     }
 
-    /** 是否允许自带的直链兜底（ext 里 "fallback": true 才开，默认关） */
-    private boolean fallbackOn() {
+    @Override
+    public String playerContent(String flag, String id, List<String> vipFlags) {
+        Spider rq = real();
+        if (rq == null) return media("拿不到饭太硬的夸克实现：" + realReason);
         try {
-            if (extRaw.startsWith("{")) return "true".equals(J.parse(extRaw).str("fallback"));
-        } catch (Throwable ignore) { }
-        return false;
-    }
-
-    /** 自带那套：枚举剧集 -> 夸父原(源文件直链) / 夸父智(转码 m3u8)；失败返回 null */
-    private String[] ownPlayList(String pwd, String name) {
-        try {
-            String stoken = stoken(pwd);
-            List<J> root = listDir(pwd, stoken, "0");
-            String startFid = "0";
-            if (!root.isEmpty()) startFid = findDir(pwd, stoken, root, name);
-            List<J> eps = new ArrayList<J>();
-            collect(pwd, stoken, startFid, eps, 0, 600);
-            if (eps.isEmpty()) return null;
-            StringBuilder raw = new StringBuilder(), smart = new StringBuilder();
-            for (int i = 0; i < eps.size(); i++) {
-                J f = eps.get(i);
-                String label = "第" + String.format("%02d", i + 1) + "集";
-                String base = "4k:play:" + pwd + ":" + f.str("fid") + ":" + f.str("share_fid_token");
-                if (i > 0) { raw.append("#"); smart.append("#"); }
-                raw.append(label).append("$").append(base).append(":r");
-                smart.append(label).append("$").append(base).append(":s");
-            }
-            return new String[]{"夸父原$$$夸父智", raw + "$$$" + smart};
+            return rq.playerContent(flag, id, vipFlags);   // 原样转发，含 夸父原/夸父智 的分档逻辑
         } catch (Throwable t) {
-            return null;
+            return media("取流失败：" + t.getMessage());
         }
     }
 
-    /** 在分享树里按番名找最匹配的子目录（整季合集场景） */
-    /** 统一的失败返回：必须是合法 JSON，否则客户端会报「JSON解析失败」 */
     private String fail(String msg) {
         return "{\"list\":[],\"msg\":" + J.q(msg) + "}";
     }
 
-    private String findDir(String pwd, String stoken, List<J> roots, String name) throws Exception {
-        for (J d : roots) {
-            if (!"true".equals(d.str("dir")) && !"1".equals(d.str("dir"))) continue;
-            String score = d.str("file_name");
-            if (norm(score).contains(norm(name)) || norm(name).contains(norm(score))) return d.str("fid");
-            List<J> sub = listDir(pwd, stoken, d.str("fid"));
-            for (J s : sub) {
-                if (("true".equals(s.str("dir")) || "1".equals(s.str("dir")))
-                        && (norm(s.str("file_name")).contains(norm(name))
-                            || norm(name).contains(norm(s.str("file_name"))))) {
-                    return s.str("fid");
-                }
-            }
-            return d.str("fid"); // 只有一个包装目录时直接下钻
-        }
-        return "0";
+    private String media(String msg) {
+        return "{\"parse\":0,\"playUrl\":\"\",\"url\":\"\",\"msg\":" + J.q(msg) + "}";
     }
 
-    private static String norm(String s) {
-        return s == null ? "" : s.replaceAll("\\[[^\\]]*\\]", "").replaceAll("^\\s*\\d+[.、\\-_ ]*", "")
-                .replaceAll("(?i)\\bs\\d{1,2}\\b", "").replaceAll("[\\s\\-_·:：,，。.、]+", "").toLowerCase();
-    }
+    /* ===== 直接调用饭太硬 jar 里的夸克实现（解密 dex，只能经 Init.loader() 拿） ===== */
 
-    private void collect(String pwd, String stoken, String fid, List<J> out, int depth, int limit) throws Exception {
-        if (depth > 5 || out.size() >= limit) return;
-        for (J f : listDir(pwd, stoken, fid)) {
-            if (out.size() >= limit) return;
-            String nm = f.str("file_name").toLowerCase();
-            if ("true".equals(f.str("dir")) || "1".equals(f.str("dir"))) {
-                collect(pwd, stoken, f.str("fid"), out, depth + 1, limit);
-            } else if (nm.endsWith(".mp4") || nm.endsWith(".mkv") || nm.endsWith(".ts")
-                    || nm.endsWith(".m2ts") || nm.endsWith(".avi") || nm.endsWith(".mov")) {
-                out.add(f);
-            }
-        }
-    }
-
-    /* ===================== 直接调用饭太硬 jar 自己的夸克解析 ===================== */
-
-    /**
-     * 拿到饭太硬 jar 里的夸克实现（com.github.catvod.spider.Cloud_quark）。
-     *
-     * 真正的实现类在**解密后的 dex** 里，由 Init 的子 DexClassLoader 加载
-     * （loader dex 里的 *Guard 只是转发壳）；我们的类在 app 的 ClassLoader 里，
-     * 父加载器看不到子加载器的类，所以只能走 Init.loader()。
-     */
     private Spider build(String ext) {
         try {
             ClassLoader cl = Init.loader();
@@ -431,7 +255,6 @@ public class Anime4KGuard extends Spider {
         }
     }
 
-    /** 用某个实例解析分享，返回 {vod_play_from, vod_play_url}；失败返回 null 并记原因 */
     private String[] detailOf(Spider rq, String pwd) {
         if (rq == null) return null;
         try {
@@ -456,11 +279,9 @@ public class Anime4KGuard extends Spider {
     }
 
     /**
-     * 解析分享。两步，且**优先用用户自己的登录态**：
-     *  1) 用配置里的 ext 原样初始化 —— 用户在「我的云盘」扫码登录的会话就在共用单例里，
-     *     这时不碰任何我们的东西；
-     *  2) 只有在第 1 步出不来列表（＝没有会话）时，才用本机 /Cloud-drive.txt 补一次
-     *     （服务端会先校验 cookie 有效才吐，所以不会污染其它线路）。
+     * 1) 先用配置里的 ext 原样初始化 —— 用户自己在「我的云盘」扫码登录的会话就在共用单例里，
+     *    这时一点都不碰我们的东西；
+     * 2) 只有第 1 步拿不到播放列表时才用 ext.session（如果有）补一次。
      */
     private String[] realDetail(String pwd) {
         if (!plainTried) {
@@ -470,23 +291,19 @@ public class Anime4KGuard extends Spider {
         String[] r = detailOf(realPlain, pwd);
         if (r != null) { realQuark = realPlain; return r; }
 
-        if (!extRaw.contains("http")) {
-            if (!mineTried) {
-                mineTried = true;
-                String base = serverUrl.isEmpty() ? SERVER_DATA : serverUrl.replaceAll("/+$", "");
-                realMine = build("{\"Cloud-drive\":" + J.q(base + "/Cloud-drive.txt") + "}");
-            }
-            r = detailOf(realMine, pwd);
+        if (!sessionUrl.isEmpty() && !sessionTried) {
+            sessionTried = true;
+            realSession = build("{\"Cloud-drive\":" + J.q(sessionUrl) + "}");
+            r = detailOf(realSession, pwd);
             if (r != null) {
-                realQuark = realMine;
-                realReason = "配置里没有会话，用了本机 server.py 的会话";
+                realQuark = realSession;
+                realReason = "配置里没有会话，用了 ext.session";
                 return r;
             }
         }
         return null;
     }
 
-    /** playerContent 用：详情成功后已经定了用哪个实例；没定过就按同样顺序补一个 */
     private Spider real() {
         if (realQuark != null) return realQuark;
         if (!plainTried) {
@@ -494,219 +311,12 @@ public class Anime4KGuard extends Spider {
             realPlain = build(extRaw.isEmpty() ? "{}" : extRaw);
         }
         if (realPlain != null) { realQuark = realPlain; return realQuark; }
-        if (!extRaw.contains("http") && !mineTried) {
-            mineTried = true;
-            String base = serverUrl.isEmpty() ? SERVER_DATA : serverUrl.replaceAll("/+$", "");
-            realMine = build("{\"Cloud-drive\":" + J.q(base + "/Cloud-drive.txt") + "}");
-            realQuark = realMine;
+        if (!sessionUrl.isEmpty() && !sessionTried) {
+            sessionTried = true;
+            realSession = build("{\"Cloud-drive\":" + J.q(sessionUrl) + "}");
+            realQuark = realSession;
         }
         return realQuark;
-    }
-
-    /* ===================== 播放：转存 + 取流（原画 / 智能） ===================== */
-
-    @Override
-    public String playerContent(String flag, String id, List<String> vipFlags) {
-        try {
-            // 不是我们自己造的 id（4k:play:...）就说明它来自饭太硬自己的解析，原样转发
-            if (!id.startsWith("4k:play:")) {
-                Spider rq = real();
-                if (rq != null) return rq.playerContent(flag, id, vipFlags);
-                return media("播放地址来自饭太硬的解析，但拿不到它的实现类");
-            }
-            if (!authed()) return media("未配置 quarkCookie：请在配置的 ext 里填 {\"cookie\":\"__puus=...\"}");
-            String[] p = id.split(":");   // 4k:play:<pwd>:<fid>:<share_token>[:r|s]
-            if (p.length < 5) return media("播放地址格式错误");
-            String pwd = p[2], fid = p[3], token = p[4];
-            String q = p.length > 5 ? p[5] : ("智能".equals(flag) ? "s" : "r");
-            ensurePuus();
-            String own = saveToTemp(pwd, fid, token);
-            String url, how;
-            if ("s".equals(q)) {
-                // 智能：夸克转码流（m3u8）。玩偶哥哥的「夸父智」就是这条路：
-                // /file/play 拿 video_list，转码是异步的所以要轮询几次。
-                url = transcodeUrl(own);
-                how = "智能·转码流";
-                if (url == null || url.isEmpty()) {
-                    url = downloadUrl(own);          // 转码还没好 -> 用源文件直链兜底
-                    how = "智能→原画兜底";
-                }
-            } else {
-                // 原画：file/download 直链，就是源文件本身（全分辨率、码率最高）
-                how = "原画·源文件直链";
-                url = "";
-                try {
-                    url = downloadUrl(own);
-                } catch (Throwable t) {
-                    url = transcodeUrl(own);         // 大文件被限/取链失败 -> 转码流兜底
-                    how = "原画→智能兜底(" + t.getMessage() + ")";
-                }
-            }
-            if (url == null || url.isEmpty()) return media("取流失败：" + how);
-            return "{\"parse\":0,\"playUrl\":\"\",\"url\":" + J.q(url)
-                    + ",\"header\":" + J.q(sessionHeader()) + "}";
-        } catch (Throwable t) {
-            return media("取流失败：" + t.getMessage());
-        }
-    }
-
-    /** 夸克转码播放流：/file/play -> data.video_list[].url（m3u8，播放器最友好） */
-    private String transcodeUrl(String ownFid) {
-        for (int attempt = 0; attempt < 6; attempt++) {
-            for (String res : new String[]{"raw", "low"}) {
-                try {
-                    String u = playUrl(ownFid, res);
-                    if (u != null && !u.isEmpty()) return u;
-                } catch (Throwable ignore) { }
-            }
-            try { Thread.sleep(attempt < 3 ? 1200 : 2500); } catch (InterruptedException ignore) { }
-        }
-        return "";
-    }
-
-    private String playUrl(String ownFid, String resolution) throws Exception {
-        String q = "?pr=ucpro&fr=pc&fid=" + enc(ownFid) + "&resolution=" + enc(resolution);
-        J r = J.parse(http("GET", API + "/file/play" + q, null, ckHeader(), null));
-        J d = r.node("data");
-        if (d == null) return "";
-        for (J it : d.arr("video_list")) {
-            String u = it.str("url");
-            if (!u.isEmpty()) return u;
-        }
-        return "";
-    }
-
-    private String media(String msg) {
-        return "{\"parse\":0,\"playUrl\":\"\",\"url\":\"\",\"msg\":" + J.q(msg) + "}";
-    }
-
-    private String sessionHeader() {
-        ensurePuus();
-        StringBuilder sb = new StringBuilder();
-        String sc = sessionCookie();
-        if (sc != null && !sc.isEmpty()) sb.append("Cookie: ").append(sc).append("\n");
-        sb.append("User-Agent: ").append(PC_UA).append("\n");
-        sb.append("Referer: https://pan.quark.cn/");
-        return sb.toString();
-    }
-
-    /** 取流会话 Cookie（含 __puus） */
-    private String sessionCookie() { return cookie; }
-
-    /** 统一的会话请求头：夸克的转存/取链/列目录都必须带登录 Cookie，否则 401 require login [guest] */
-    private String ckHeader() {
-        ensurePuus();
-        return "Cookie: " + cookie;
-    }
-
-    /* ===================== 夸克接口 ===================== */
-
-    private String stoken(String pwd) throws Exception {
-        String hit = stokenCache.get(pwd);
-        if (hit != null) return hit;
-        String body = "{\"pwd_id\":" + J.q(pwd) + ",\"passcode\":\"\"}";
-        J r = J.parse(http("POST", API + "/share/sharepage/token?pr=ucpro&fr=pc", body, ckHeader(), null));
-        J d = r.node("data");
-        if (r.get("status") == null || !"200".equals(r.str("status")) || d == null)
-            throw new Exception("分享不可用 " + r.str("message"));
-        String st = d.str("stoken");
-        stokenCache.put(pwd, st);
-        return st;
-    }
-
-    private List<J> listDir(String pwd, String stoken, String fid) throws Exception {
-        String q = "?pr=ucpro&fr=pc&pwd_id=" + enc(pwd) + "&stoken=" + enc(stoken)
-                + "&pdir_fid=" + enc(fid) + "&force=0&_page=1&_size=200&_fetch_total=1"
-                + "&_sort=" + enc("file_type:asc,file_name:asc");
-        J r = J.parse(http("GET", API + "/share/sharepage/detail" + q, null, ckHeader(), null));
-        J d = r.node("data");
-        return d == null ? new ArrayList<J>() : d.arr("list");
-    }
-
-    /** 转存到一次性子目录，返回转存后的 fid（玩偶哥哥同款做法） */
-    private String saveToTemp(String pwd, String fid, String token) throws Exception {
-        String ck = "saved_" + pwd + "_" + fid;
-        String hit = savedCache.get(ck);
-        Integer at = savedAt.get(ck);
-        if (hit != null && at != null && System.currentTimeMillis() / 1000 - at < 1800) return hit;
-
-        String dir = ensureDir();
-        String sub = createDir(dir, "r" + (System.currentTimeMillis() / 1000));
-        String body = "{\"fid_list\":[" + J.q(fid) + "],\"fid_token_list\":[" + J.q(token) + "]"
-                + ",\"to_pdir_fid\":" + J.q(sub) + ",\"pwd_id\":" + J.q(pwd)
-                + ",\"stoken\":" + J.q(stoken(pwd)) + ",\"pdir_fid\":\"0\""
-                + ",\"pdir_save_all\":false,\"exclude_fids\":[],\"scene\":\"link\"}";
-        J r = J.parse(http("POST", API + "/share/sharepage/save?pr=ucpro&fr=pc&uc_param_str=", body, ckHeader(), null));
-        J d = r.node("data");
-        if (d == null || d.str("task_id").isEmpty()) throw new Exception("转存失败 " + r.str("message"));
-        String own = waitTask(d.str("task_id"));
-        if (own == null || own.isEmpty()) throw new Exception("转存任务未产出文件");
-        savedCache.put(ck, own);
-        savedAt.put(ck, (int) (System.currentTimeMillis() / 1000));
-        return own;
-    }
-
-    private String waitTask(String taskId) throws Exception {
-        for (int i = 0; i < 20; i++) {
-            J r = J.parse(http("GET", API + "/task?pr=ucpro&fr=pc&task_id=" + enc(taskId) + "&retry_index=" + i,
-                    null, ckHeader(), null));
-            J d = r.node("data");
-            if (d != null && "2".equals(d.str("status"))) {
-                J sa = d.node("save_as");
-                if (sa == null) return null;
-                List<J> f = sa.arr("save_as_top_fids");
-                if (f.isEmpty()) f = sa.arr("save_as_select_top_fids");
-                return f.isEmpty() ? null : f.get(0).raw();
-            }
-            Thread.sleep(700);
-        }
-        return null;
-    }
-
-    private String downloadUrl(String ownFid) throws Exception {
-        String body = "{\"fids\":[" + J.q(ownFid) + "]}";
-        String hdr = ckHeader();
-        J r = J.parse(http("POST", API + "/file/download?pr=ucpro&fr=pc&uc_param_str=", body, hdr, null));
-        if (r.get("data") == null) throw new Exception(r.str("message"));
-        for (J it : r.arr("data")) {
-            String u = it.str("download_url");
-            if (!u.isEmpty()) return u;
-        }
-        throw new Exception("未返回 download_url");
-    }
-
-    private String ensureDir() throws Exception {
-        if (saveDirFid != null) return saveDirFid;
-        J r = J.parse(http("GET", API + "/file/sort?pr=ucpro&fr=pc&pdir_fid=0&_page=1&_size=200"
-                + "&_fetch_total=1&_sort=" + enc("file_type:asc,file_name:asc"), null, ckHeader(), null));
-        J d = r.node("data");
-        if (d != null) for (J f : d.arr("list")) {
-            if ("true".equals(f.str("dir")) && SAVE_DIR.equals(f.str("file_name"))) {
-                saveDirFid = f.str("fid");
-                return saveDirFid;
-            }
-        }
-        saveDirFid = createDir("0", SAVE_DIR);
-        return saveDirFid;
-    }
-
-    private String createDir(String parent, String name) throws Exception {
-        String body = "{\"pdir_fid\":" + J.q(parent) + ",\"file_name\":" + J.q(name)
-                + ",\"dir_path\":\"\",\"dir_init_lock\":false}";
-        J r = J.parse(http("POST", API + "/file?pr=ucpro&fr=pc", body, ckHeader(), null));
-        J d = r.node("data");
-        return d == null ? "" : d.str("fid");
-    }
-
-    /* ===================== 站内代理（并发拉流） ===================== */
-
-    @Override
-    public Object[] proxy(Map<String, String> params) { return proxyLocal(params); }
-
-    @Override
-    public Object[] proxyLocal(Map<String, String> params) {
-        // 最小版本先不接管代理：播放由 playerContent 返回直链 + header 完成。
-        return null;
     }
 
     /* ===================== HTTP / JSON 极简实现 ===================== */
