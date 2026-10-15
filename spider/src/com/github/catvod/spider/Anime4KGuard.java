@@ -199,12 +199,18 @@ public class Anime4KGuard extends Spider {
             for (J it : data().arr("items")) if (it.str("id").equals(id)) { item = it; break; }
             if (item == null) return fail("找不到该条目");
             String pwd = item.str("pwd_id");
-            if (pwd.isEmpty()) return fail("该条目不是夸克分享（网盘：" + item.str("drive_name") + "）");
+            if (pwd.isEmpty()) {
+                return oneItem(item, id, "诊断", "点我看原因$4k:diag",
+                        "该条目不是夸克分享（网盘：" + item.str("drive_name") + "），这条线只吃夸克分享");
+            }
 
-            String[] theirs = realDetail(pwd);
+            String[] theirs = realDetail(pwd, item.str("name"));
             if (theirs == null) {
-                return fail("饭太硬原生解析没出播放列表：" + realReason
-                        + "。先在「🗂我的云盘┃配置」里扫码登录夸克，或在 ext 里给一个 session 地址");
+                // 失败也返回一条「诊断条目」：原因写在简介里，App 里能直接看到
+                // （否则 list 为空，客户端只显示「视频线路加载失败」，什么都查不到）
+                String why = "解析没出播放列表：" + realReason
+                        + "。可先到「🗂我的云盘┃配置」里扫码登录夸克，或在 ext 里加 session 地址";
+                return oneItem(item, id, "诊断", "点我看原因$4k:diag", why);
             }
             return "{\"list\":[{\"vod_id\":\"4k:" + Json.esc(id) + "\""
                     + ",\"vod_name\":" + J.q(item.str("name"))
@@ -216,12 +222,26 @@ public class Anime4KGuard extends Spider {
                     + ",\"vod_play_url\":" + J.q(theirs[1])
                     + "}]}";
         } catch (Throwable t) {
-            return fail("详情解析失败：" + t.getMessage());
+            return fail("详情解析失败：" + t);
         }
+    }
+
+    /** 返回单条条目，把原因写进简介（失败时也能在 App 里看到原因） */
+    private String oneItem(J item, String id, String from, String play, String content) {
+        return "{\"list\":[{\"vod_id\":\"4k:" + Json.esc(id) + "\""
+                + ",\"vod_name\":" + J.q("⚠️ " + item.str("name"))
+                + ",\"vod_pic\":" + J.q(item.str("vod_pic"))
+                + ",\"vod_content\":" + J.q(content)
+                + ",\"vod_play_from\":" + J.q(from)
+                + ",\"vod_play_url\":" + J.q(play)
+                + "}]}";
     }
 
     @Override
     public String playerContent(String flag, String id, List<String> vipFlags) {
+        if (id != null && id.startsWith("4k:diag")) {
+            return media("这是诊断线路：请回到该条目的简介看失败原因（详情页上方文字）");
+        }
         Spider rq = real();
         if (rq == null) return media("拿不到饭太硬的夸克实现：" + realReason);
         try {
@@ -255,46 +275,70 @@ public class Anime4KGuard extends Spider {
         }
     }
 
-    private String[] detailOf(Spider rq, String pwd) {
+    private String[] detailOf(Spider rq, String pwd, String name) {
         if (rq == null) return null;
+        String share = "https://pan.quark.cn/s/" + pwd;
         try {
-            String json = rq.detailContent(java.util.Arrays.asList("https://pan.quark.cn/s/" + pwd));
-            if (json == null || json.length() < 20) {
-                realReason = "它的详情返回空（多为未扫码登录）";
-                return null;
-            }
-            List<J> list = J.parse(json).arr("list");
-            if (list.isEmpty()) { realReason = "它的详情没有 list"; return null; }
-            String from = list.get(0).str("vod_play_from");
-            String url = list.get(0).str("vod_play_url");
-            if (from.isEmpty() || url.isEmpty()) {
-                realReason = "它的详情没有播放列表（多为未扫码登录）";
-                return null;
-            }
-            return new String[]{from, url};
+            // 第一条路：它的 detailContent（内部剧名传空）
+            String json = rq.detailContent(java.util.Arrays.asList(share));
+            String[] got = parsePlayList(json);
+            if (got != null) return got;
+            realReason = "detailContent 没出播放列表";
+
+            // 第二条路：detailVideo(list, 剧名) + Tq.v(ef)（反射；和玩偶 Pan.panList 同一条路）
+            Object ef = rq.getClass()
+                    .getMethod("detailVideo", List.class, String.class)
+                    .invoke(rq, java.util.Arrays.asList(share), name == null ? "" : name);
+            if (ef == null) { realReason += "；detailVideo 返回空（多为未扫码登录）"; return null; }
+            ClassLoader cl = Init.loader();
+            Class<?> tq = cl.loadClass("com.github.catvod.spider.merge.Tq");
+            String json2 = (String) tq.getMethod("v", ef.getClass()).invoke(null, ef);
+            got = parsePlayList(json2);
+            if (got != null) return got;
+            realReason += "；detailVideo+Tq.v 也没出播放列表";
+            return null;
         } catch (Throwable t) {
             realReason = "调用它的详情抛异常：" + t;
             return null;
         }
     }
 
+    /** 从它的详情 JSON 里取 {vod_play_from, vod_play_url} */
+    private String[] parsePlayList(String json) {
+        try {
+            if (json == null || json.length() < 20) return null;
+            List<J> list = J.parse(json).arr("list");
+            if (list.isEmpty()) return null;
+            String from = list.get(0).str("vod_play_from");
+            String url = list.get(0).str("vod_play_url");
+            if (from.isEmpty() || url.isEmpty()) return null;
+            return new String[]{from, url};
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     /**
-     * 1) 先用配置里的 ext 原样初始化 —— 用户自己在「我的云盘」扫码登录的会话就在共用单例里，
-     *    这时一点都不碰我们的东西；
-     * 2) 只有第 1 步拿不到播放列表时才用 ext.session（如果有）补一次。
+     * 解析分享，两条路：
+     *  1) `Cloud_quark.detailContent(["https://pan.quark.cn/s/<pwd>"])` —— 但它内部是
+     *     `detailVideo(list, "")`，**剧名传空**；有些分享（整季合集/多层目录）靠剧名才找对目录；
+     *  2) 所以失败时再走一次 `detailVideo(list, 剧名)` + `Tq.v(ef)`（反射调用，和玩偶哥哥
+     *     `Pan.panList` 用的是同一个方法、同一份参数），把 Ef 转成 JSON 再取播放列表。
+     * 会话优先用配置里的 ext 原样初始化（用户扫码登录的会话就在共用单例里）；
+     * 拿不到才用 ext.session 补一次。
      */
-    private String[] realDetail(String pwd) {
+    private String[] realDetail(String pwd, String name) {
         if (!plainTried) {
             plainTried = true;
             realPlain = build(extRaw.isEmpty() ? "{}" : extRaw);
         }
-        String[] r = detailOf(realPlain, pwd);
+        String[] r = detailOf(realPlain, pwd, name);
         if (r != null) { realQuark = realPlain; return r; }
 
         if (!sessionUrl.isEmpty() && !sessionTried) {
             sessionTried = true;
             realSession = build("{\"Cloud-drive\":" + J.q(sessionUrl) + "}");
-            r = detailOf(realSession, pwd);
+            r = detailOf(realSession, pwd, name);
             if (r != null) {
                 realQuark = realSession;
                 realReason = "配置里没有会话，用了 ext.session";
