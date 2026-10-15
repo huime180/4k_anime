@@ -7,7 +7,7 @@
 * 数据源：在线表格 `ec61d240-…`（Luckysheet 结构，源自 Google Sheet，约 10 分钟同步一次）
 * 内容规模：**771 条 / 563 个独立夸克分享**，共 3 个顶层分类、19 个类别
 * 项目语言：**Python 3.9+，零第三方依赖**（只用标准库）
-* 自动同步：GitHub Actions 每 30 分钟拉一次表格，重新生成数据与配置
+* 自动同步：GitHub Actions **每周一**拉一次表格，重新生成数据与配置
 
 ```
 表格(在线,自动更新) ──► GitHub Actions 定时同步 ──► data/anime.json + data/meta.json
@@ -30,7 +30,7 @@
 | 通用 TVBox 也能用 | `GET /api.php/provide/vod/?ac=list` / `?ac=detail`（标准苹果CMS JSON） |
 | 解析播放夸克链接 | `GET /play?pwd=<分享ID>&fid=<文件ID>&ft=<分享令牌>` → `302` 到直链，或 `&proxy=1` 反代 |
 | 视频有封面 | Bangumi 封面自动匹配；匹配不到时由服务端实时生成占位封面 PNG |
-| 自动同步表格 | `.github/workflows/sync.yml`，每 30 分钟一次，自动提交 |
+| 自动同步表格 | `.github/workflows/sync.yml`，每周一自动拉取并提交 |
 | 按表格分类继续分类 | `每周更新`(15 个季度子类) / `TV动画合集` / `其余群友资源合集`(含子类) |
 
 ---
@@ -120,7 +120,8 @@ docker run -d --name 4k-anime -p 8787:8787 \
 
 `.github/workflows/sync.yml`：
 
-* `cron: "*/30 * * * *"` —— 每 30 分钟拉一次表格
+* `cron: "0 4 * * 1"` —— 每周一 04:00 UTC（北京 12:00）拉一次表格。
+  想更勤快就把这行改成 `"*/30 * * * *"`（每 30 分钟）或 `"0 */6 * * *"`（每 6 小时）
 * 依次执行 `sync_table.py` → `enrich.py` → `build_config.py`
 * 有变化就 `git commit` 回仓库，并重新发布 Pages
 * 想改配置地址：仓库 **Settings → Variables → `PUBLIC_BASE`** 设成你的服务地址即可

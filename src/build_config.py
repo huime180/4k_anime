@@ -77,16 +77,27 @@ def _make_placeholder_covers():
     out_dir = os.path.join(PUBLIC_DIR, "cover")
     os.makedirs(out_dir, exist_ok=True)
     made = 0
+    wanted = set()
     for item in anime.get("items", []):
         info = meta.get(normalize_name(item["name"])) or {}
         if info.get("image"):
-            continue
+            continue            # 已有 Bangumi 封面，不需要占位图
+        wanted.add(item["id"] + ".png")
         path = os.path.join(out_dir, item["id"] + ".png")
         if os.path.exists(path):
             continue
         with open(path, "wb") as fh:
             fh.write(cover_png(item["id"]))
         made += 1
+
+    # 清掉「后来配上 Bangumi 封面」而变得多余的占位图
+    for name in os.listdir(out_dir):
+        if name.endswith(".png") and name not in wanted:
+            try:
+                os.remove(os.path.join(out_dir, name))
+                made -= 1
+            except OSError:
+                pass
     return made
 
 

@@ -2,8 +2,8 @@ name: 同步表格并发布
 
 on:
   schedule:
-    # 每 30 分钟自动同步一次表格
-    - cron: "*/30 * * * *"
+    # 每周一 04:00 UTC（北京 12:00）自动同步一次表格
+    - cron: "0 4 * * 1"
   workflow_dispatch:
   push:
     branches: [ main ]
