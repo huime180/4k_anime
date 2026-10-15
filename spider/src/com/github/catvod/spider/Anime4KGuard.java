@@ -304,34 +304,33 @@ public class Anime4KGuard extends Spider {
                 raw.append(label).append("$").append(base).append(":r");
                 smart.append(label).append("$").append(base).append(":s");
             }
-            // 自带两档：原画＝源文件直链（全分辨率）；智能＝夸克转码流（HLS，最省事能播）
+            // 自带两档，名字沿用饭太硬那套：夸父原＝源文件直链（全分辨率）、
+            // 夸父智＝夸克转码流（m3u8，播放器最友好）。
+            // 名字用「夸父原/夸父智」不只是好看：饭太硬那套逻辑就是按
+            // contains("夸父原")/contains("夸父智") 分支的，同名以后两边互换也不会踩坑。
             String mineFrom = "", mineUrl = "";
             if (!eps.isEmpty()) {
-                // 标成「直链」：这两条是我们自己解析出来的 CDN 直链（要播放器带 header），
-                // 和饭太硬那两条走 app 本地代理（/proxy/play/...）的形态不同，别混。
-                mineFrom = "原画(直链)$$$智能(直链)";
+                mineFrom = "夸父原$$$夸父智";
                 mineUrl = raw + "$$$" + smart;
             }
             // 饭太硬原生那条（和玩偶哥哥同一条路）：夸父原/夸父智
             String[] theirs = realDetail(pwd);
             String from = theirs != null ? theirs[0] : "";
             String url = theirs != null ? theirs[1] : "";
-            String nativeFrom = from;                // 饭太硬自己的名字（夸父原/夸父智），必须原样保留
+            String nativeFrom = from;                // 饭太硬自己的名字（夸父原/夸父智），原样保留
             String src;
-            if (!from.isEmpty() && !mineFrom.isEmpty()) {
-                from = from + "$$$" + mineFrom;      // 两套都给：原生优先，自带兜底
-                url = url + "$$$" + mineUrl;
-                src = "饭太硬原生(" + nativeFrom + ") + 自带";
-            } else if (!from.isEmpty()) {
-                src = "仅饭太硬原生(" + nativeFrom + ")";   // 自带没枚举出来，播不了就只能去「我的云盘」登录
+            if (!from.isEmpty()) {
+                // 原生那条能用：**只给它的两档**。两条线名字一样（都叫夸父原/夸父智），
+                // 同时塞进去 app 里会出现两条同名线路，看着像 bug。
+                src = "饭太硬原生(" + nativeFrom + ")";
             } else if (!mineFrom.isEmpty()) {
-                from = mineFrom;
+                from = mineFrom;                     // 兜底：同名两档，走我们自己的取流
                 url = mineUrl;
-                src = "仅自带（饭太硬原生不可用：" + realReason + "）";
+                src = "自带同名两档（饭太硬原生不可用：" + realReason + "）";
             } else {
                 return fail("两套解析都没出播放列表（饭太硬：" + realReason + "；自带：没找到视频文件）");
             }
-            // 把分开的线路名写进简介，方便一眼看到 app 里到底给了几条
+            // 把线路名写进简介，方便一眼看到 app 里到底给了几条
             String fromList = from.replace("$$$", " / ");
             return "{\"list\":[{\"vod_id\":\"4k:" + Json.esc(id) + "\""
                     + ",\"vod_name\":" + J.q(item.str("name"))
