@@ -68,7 +68,11 @@ https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/co
   但同一台机器上 `curl` 稳定成功，所以 `_fetch_json()` 会**自动退到系统 curl**（CI 里用不到）。
 * 增量方式：已经有封面并且 `details` 标记为真的条目直接跳过；只差详情的条目走快路径，
   **不重新搜索**（省一次请求，也不会重复下载封面/简介）。
-* 匹配不到番组的名字记成 `{"miss": true}`，不再反复重试。
+* 只有「搜到的候选里没有名字对得上的」才记 `{"miss": true}`（真·没这部番）；
+  搜索接口一个候选都没返回（多半是网络抖动）时**什么都不写**，下一轮再试，
+  不会把一次抖动记成「没这部番」。
+* 匹配用的搜索词会自动剥掉 `第N期/全系列/(重制版)` 之类的尾巴，
+  实测覆盖率 **701/771 条**（剩下的多是 Bangumi 没有中文条目的冷门/超长标题）。
 
 `vod_year` / `vod_area` / `vod_director` / `vod_actor` / `vod_content` 会写进 `anime.json` 的每个 item；
 `csp_Anime4KGuard` 在拼详情时**优先用我们这份**，我们没有的字段再向饭太硬那条详情借。

@@ -48,8 +48,9 @@ UA = "dsh-4k-anime/1.0 (https://github.com/huime180/4k_anime)"
 
 # 番名里需要剥掉、但不利于搜索的尾巴
 _TRIM = re.compile(
-    r"(?i)(剧场版|总集篇|合集|TV动画|第\s*\d+\s*[期季部]|part\s*\d+|"
-    r"\bs\d{1,2}\b|season\s*\d+|\b重制版\b|\bOVA\b|\bOAD\b|\bSP\b|\bBD\b|\b4K\b)"
+    r"(?i)(剧场版|总集篇|合集|全系列|全\s*\d+\s*季|全集|名作之壁|TV动画|"
+    r"第\s*\d+\s*[期季部]|part\s*\d+|\bs\d{1,2}\b|season\s*\d+|"
+    r"\b重制版\b|\bOVA\b|\bOAD\b|\bSP\b|\bBD\b|\b4K\b)"
 )
 
 
@@ -59,12 +60,15 @@ def query_variants(title):
     out = []
 
     def push(value):
+        value = re.sub(r"[（(]\s*[)）]", " ", value)          # 剥完尾巴留下的空括号
         value = re.sub(r"\s+", " ", value).strip(" -_/·、")
         if value and value not in out:
             out.append(value)
 
     push(raw)
     push(_TRIM.sub(" ", raw))
+    # 「进击的巨人全系列(重制版)」这类：先剥括号再剥尾巴，才得到真正能搜到的「进击的巨人」
+    push(_TRIM.sub(" ", re.sub(r"[（(].*?[)）]", " ", raw)))
     # 「A/B/C」这种并列名，先取最长的一段
     for piece in re.split(r"[/／|]", raw):
         if len(piece.strip()) >= 2:
@@ -236,12 +240,19 @@ def details_of(bgm_id):
 
 
 def resolve(title, want_details=True):
-    """返回一条元数据字典，或 None；want_details=False 时只补封面/简介（快）"""
+    """返回一条元数据字典；
+
+    返回 None    -> 搜索接口这次**一个候选都没返回**（多半是网络/接口抽风），
+                    调用方不要记成「未匹配」，下一轮还会重试；
+    返回 False   -> 有候选但名字对不上，才是真·未匹配（记 miss，不再反复试）。
+    """
+    saw_candidates = False
     for keyword in query_variants(title):
         payload = bgm_search(keyword)
         if not payload.get("list"):
             time.sleep(0.35)
             continue
+        saw_candidates = True
         cand, score = pick_best(title, payload["list"])
         if cand and score >= 0.5:
             images = cand.get("images") or {}
@@ -268,7 +279,7 @@ def resolve(title, want_details=True):
                 "keyword": keyword,
             }
         time.sleep(0.35)
-    return None
+    return False if saw_candidates else None
 
 
 def main():
@@ -351,8 +362,12 @@ def main():
                 found = None
                 with lock:
                     print("  [%d/%d] %s -> 异常 %s" % (idx, len(todo), title[:24], exc))
-            note = ("%s (%.2f)" % ((found["name_cn"] or found["bgm_name"])[:22], found["match"])
-                    if found else "未匹配")
+            if found:
+                note = "%s (%.2f)" % ((found["name_cn"] or found["bgm_name"])[:22], found["match"])
+            elif found is False:
+                note = "未匹配（有候选但名字对不上）"
+            else:
+                note = "接口没返回候选，下次再试"
 
         with lock:
             if entry is not None:
@@ -363,8 +378,9 @@ def main():
                 meta[key] = found
                 fresh[key] = found
                 stat["hit"] += 1
-            else:
+            elif found is False:
                 meta[key] = {"bgm_id": None, "image": "", "miss": True}
+            # found is None：什么都不写，留给下一轮（别把网络抖动记成「没这部番」）
             print("  [%d/%d] %-28s -> %s" % (idx, len(todo), title[:28], note))
             if len(fresh) % 25 == 0:
                 _save(meta)
