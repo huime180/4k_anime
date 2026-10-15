@@ -29,6 +29,7 @@
 | 像玩偶哥哥那样的接口 | `GET /spider/home`、`/spider/category`、`/spider/detail`、`/spider/play` |
 | 通用 TVBox 也能用 | `GET /api.php/provide/vod/?ac=list` / `?ac=detail`（标准苹果CMS JSON） |
 | 解析播放夸克链接 | `GET /play?pwd=<分享ID>&fid=<文件ID>&ft=<分享令牌>` → `302` 到直链，或 `&proxy=1` 反代 |
+| **夸克扫码登录** | 打开 `GET /login` 用夸克 App 扫码，Cookie 自动写入 `config.json` 并热生效 |
 | 视频有封面 | Bangumi 封面自动匹配；匹配不到时由服务端实时生成占位封面 PNG |
 | 自动同步表格 | `.github/workflows/sync.yml`，每周一自动拉取并提交 |
 | 按表格分类继续分类 | `每周更新`(15 个季度子类) / `TV动画合集` / `其余群友资源合集`(含子类) |
@@ -77,8 +78,34 @@ python3 src/server.py --port 8787
 
 要么复制 `config.example.json` 成 `config.json` 填进去（`config.json` 已被 `.gitignore` 忽略，**不要提交**）。
 
-**拿到 Cookie 的办法**：电脑浏览器登录 <https://pan.quark.cn> → F12 → Network → 随便点一个请求 →
-复制请求头里的整条 `Cookie`（至少要含 `__puus`）。
+#### 推荐：网页扫码登录（和饭太硬一样）
+
+服务启动后打开：
+
+```
+http://你的地址:8787/login
+```
+
+页面上会出现一个二维码，用**手机夸克 App 右上角「扫一扫」**扫描 → 在手机上点「确认登录」→
+页面会自动检测到成功，并把 Cookie 写进 `config.json`，**服务立即热生效，不用重启**。
+
+命令行/无浏览器的场景（比如 VPS），可以直接在终端里出码：
+
+```bash
+python3 src/quark_login.py      # 二维码直接画在终端里，扫完自动保存
+```
+
+> 如果服务暴露在公网，建议设置 `export ADMIN_TOKEN=你的口令`，
+> 之后要访问 `/login?key=你的口令` 才能发起扫码，避免别人替你登录。
+
+#### 手动方式（备用）
+
+电脑浏览器登录 <https://pan.quark.cn> → F12 → Network → 随便点一个请求 →
+复制请求头里的整条 `Cookie`（至少要含 `__puus`），或者：
+
+```bash
+export QUARK_COOKIE='__puus=xxx; __pus=yyy; ...'
+```
 
 > 未配置 Cookie 时：分类、封面、剧集列表全部正常，只有点播放会返回 `401`。
 
@@ -165,6 +192,10 @@ GET /play?pwd=<分享ID>&fid=<文件ID>&ft=<share_fid_token>          → 302 �
 GET /play?pwd=…&fid=…&ft=…&proxy=1                                → 服务端反代（支持 Range）
 GET /cover/<item_id>.png                                          → 封面（无 Bangumi 时为占位图）
 GET /health                                                       → 条目数 / Cookie 是否已配置
+
+GET /login                                                        → 夸克扫码登录页
+GET /api/qr/new                                                   → 申请二维码 {token, rid, size, rows}
+GET /api/qr/poll?token=…&rid=…                                    → 轮询扫码状态；确认后自动换取并保存 Cookie
 ```
 
 ---
@@ -190,10 +221,19 @@ GET /health                                                       → 条目数 
 子文件夹，所以 `src/quark.py` 会**先在分享树里按番名模糊下钻**找到对应文件夹，
 再递归收集其中的视频文件（实测：`药屋少女的呢喃 S3` → 命中 `147.药屋少女的呢喃 …`）。
 
+### 封面图（重要）
+
+Bangumi 返回的封面在 `lain.bgm.tv`，实测这个 **图片 CDN 在部分网络下会被连接重置**
+（`curl` 直接报 TLS EOF，但同一个路径换到主站域名 `bgm.tv` 就 20/20 全部可取）。
+所以项目里统一把封面域名归一化成 `https://bgm.tv/...`，见 `src/enrich.py` 的 `_reachable()`。
+
 ### 夸克接口（实测）
 
 | 步骤 | 接口 | 是否需要登录 |
 | --- | --- | --- |
+| 取二维码 token | `GET uop.quark.cn/cas/ajax/getTokenForQrcodeLogin` | 否 |
+| 轮询扫码结果 | `GET uop.quark.cn/cas/ajax/getServiceTicketByQrcodeToken` | 否 |
+| 换 Cookie | `GET pan.quark.cn/account/info?st=…&lw=scan` | 否 |
 | 申请分享令牌 | `POST /1/clouddrive/share/sharepage/token` | 否 |
 | 列目录 | `GET /1/clouddrive/share/sharepage/detail` | 否 |
 | 转存到自己网盘 | `POST /1/clouddrive/share/sharepage/save` | **是** |
@@ -215,6 +255,8 @@ task（等转存完成）→ file/download（拿直链）`。转存结果做了 
 │   ├── enrich.py         # Bangumi 封面/简介/评分 → data/meta.json（增量缓存）
 │   ├── quark.py          # 夸克 token/列目录/模糊匹配/转存/取直链
 │   ├── server.py         # HTTP 服务：配置 + CMS + spider + 取流 + 网页
+│   ├── quark_login.py    # 夸克扫码登录（取码/轮询/换 Cookie）
+│   ├── _vendor/segno/    # 内置二维码库（BSD-3-Clause），保持零依赖
 │   └── build_config.py   # 生成 public/4k_anime.json 与静态站点数据
 ├── data/                 # 自动生成的同步结果与缓存（cache/ 不提交）
 ├── public/               # GitHub Pages 静态站点 + 配置地址

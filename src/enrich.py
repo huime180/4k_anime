@@ -92,6 +92,14 @@ def pick_best(title, candidates):
     return best, best_score
 
 
+def _reachable(url):
+    """把不可达的图片 CDN 域名换成主站域名"""
+    if not url:
+        return url
+    return (url.replace("http://lain.bgm.tv", "https://bgm.tv")
+               .replace("https://lain.bgm.tv", "https://bgm.tv"))
+
+
 def resolve(title):
     """返回一条元数据字典，或 None"""
     for keyword in query_variants(title):
@@ -103,6 +111,8 @@ def resolve(title):
         if cand and score >= 0.5:
             images = cand.get("images") or {}
             rating = cand.get("rating") or {}
+            # lain.bgm.tv 在部分网络下不可达，改走主站域名（实测 20/20 可取）
+            images = {k: _reachable(v) for k, v in images.items()}
             return {
                 "bgm_id": cand.get("id"),
                 "bgm_name": cand.get("name") or "",

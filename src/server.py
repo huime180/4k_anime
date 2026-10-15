@@ -37,6 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from quark import (Quark, QuarkAuthError, QuarkError, client_from_env,  # noqa: E402
                    normalize_name)
+import quark_login  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(ROOT, "data")
@@ -95,6 +96,7 @@ class App:
         self.quark = client_from_env()
         self._episodes = {}          # item_id -> (ts, payload)
         self._cover_cache = {}
+        self.qr_sessions = {}        # token -> {rid, created, used}
         self._by_type_top = {}
         self._by_type = {}
         self._by_id = {}
@@ -214,6 +216,107 @@ code{background:#232636;padding:2px 6px;border-radius:5px}
 <div class="grid">{{CARDS}}</div></body></html>"""
 
 
+LOGIN_TEMPLATE = r"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>夸克扫码登录 · 4K动漫</title>
+<style>
+body{margin:0;background:#0f1017;color:#e9e9f2;font:14px/1.6 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+     display:flex;flex-direction:column;align-items:center;padding:26px 16px}
+h1{font-size:18px;margin:0 0 4px}
+.sub{color:#8b90a8;font-size:12.5px;text-align:center;margin-bottom:18px;max-width:420px}
+#qr{display:grid;background:#fff;padding:10px;border-radius:12px;width:min(76vw,300px);aspect-ratio:1;gap:0}
+#qr i{display:block;width:100%;aspect-ratio:1}
+#status{margin-top:16px;font-size:14px;min-height:22px;text-align:center}
+#nick{color:#7cc0ff}
+button{margin-top:14px;background:#191b26;border:1px solid #282b3a;color:#e9e9f2;padding:9px 18px;border-radius:9px;cursor:pointer}
+button:hover{border-color:#7cc0ff;color:#7cc0ff}
+ol{color:#8b90a8;font-size:12.5px;max-width:430px;padding-left:20px}
+code{background:#191b26;padding:2px 6px;border-radius:5px;border:1px solid #282b3a}
+a{color:#7cc0ff}
+.ok{color:#7ee787}.bad{color:#ff7b72}.dim{color:#8b90a8}
+</style>
+</head>
+<body>
+<h1>📱 夸克扫码登录</h1>
+<div class="sub">当前状态：<b>{{STATE}}</b>　｜　登录成功后 Cookie 会写入 <code>config.json</code>，服务立即生效，无需重启</div>
+
+<div id="qr"></div>
+<div id="status">正在获取二维码…</div>
+<button id="refresh">刷新二维码</button>
+
+<ol>
+  <li>打开手机 <b>夸克 App</b>，用首页右上角的「扫一扫」</li>
+  <li>扫描上面的二维码，并在手机上点击「确认登录」</li>
+  <li>本页会自动检测到登录成功，并保存 Cookie</li>
+</ol>
+<div class="dim" style="margin-top:10px;font-size:12px">
+  扫不了？也可以在本机终端运行 <code>python3 src/quark_login.py</code>，二维码会直接画在终端里。
+</div>
+
+<script>
+let token = '', rid = '', timer = null;
+const statusEl = document.getElementById('status');
+const setStatus = (html, cls) => { statusEl.className = cls || ''; statusEl.innerHTML = html; };
+
+function renderQr(rows, size){
+  const quiet = 4, n = size + quiet * 2, grid = document.getElementById('qr');
+  grid.style.gridTemplateColumns = 'repeat(' + n + ',1fr)';
+  const parts = [];
+  for (let y = 0; y < n; y++){
+    for (let x = 0; x < n; x++){
+      const mx = x - quiet, my = y - quiet;
+      const on = mx >= 0 && my >= 0 && mx < size && my < size && rows[my][mx];
+      parts.push('<i style="background:' + (on ? '#000' : '#fff') + '"></i>');
+    }
+  }
+  grid.innerHTML = parts.join('');
+}
+
+async function newQr(){
+  if (timer) { clearInterval(timer); timer = null; }
+  setStatus('正在获取二维码…');
+  let data;
+  try {
+    data = await fetch('api/qr/new{{KEYQ}}').then(r => r.json());
+  } catch (e) { setStatus('获取失败：' + e.message, 'bad'); return; }
+  if (data.error){ setStatus('获取失败：' + data.error, 'bad'); return; }
+  renderQr(data.rows, data.size);
+  token = data.token; rid = data.rid;
+  setStatus('请用夸克 App 扫描二维码', 'dim');
+  timer = setInterval(pollOnce, 2000);
+}
+
+async function pollOnce(){
+  if (!token) return;
+  let data;
+  try {
+    data = await fetch('api/qr/poll?token=' + encodeURIComponent(token) +
+                       '&rid=' + encodeURIComponent(rid) + '{{KEYQ}}').then(r => r.json());
+  } catch (e) { return; }
+  if (data.state === 'confirmed'){
+    clearInterval(timer); timer = null;
+    setStatus('✅ ' + (data.message || '登录成功') + (data.nick ? '（<span id="nick">' + data.nick + '</span>）' : ''), 'ok');
+  } else if (data.state === 'failed'){
+    clearInterval(timer); timer = null;
+    setStatus('❌ ' + (data.message || '登录失败') + '，请刷新二维码重试', 'bad');
+  } else if (data.state === 'expired'){
+    clearInterval(timer); timer = null;
+    setStatus('二维码已过期，正在刷新…', 'dim');
+    newQr();
+  }
+}
+
+document.getElementById('refresh').onclick = newQr;
+window.addEventListener('beforeunload', () => { if (timer) clearInterval(timer); });
+newQr();
+</script>
+</body>
+</html>"""
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "4k-anime/1.0"
     protocol_version = "HTTP/1.1"
@@ -293,6 +396,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.spider(path[len("/spider/"):], query)
             if path == "/play":
                 return self.play(query)
+            if path == "/login":
+                return self.page_login(query)
+            if path == "/api/qr/new":
+                return self.qr_new(query)
+            if path == "/api/qr/poll":
+                return self.qr_poll(query)
             return self.send_json({"error": "not found", "path": path}, 404)
         except BrokenPipeError:
             pass
@@ -302,6 +411,69 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(exc)}, 500)
             except Exception:
                 pass
+
+    # ---------------- 扫码登录 ---------------- #
+    def admin_ok(self, query):
+        """配置了 ADMIN_TOKEN 时，扫码登录相关接口需要带 ?key="""
+        want = os.environ.get("ADMIN_TOKEN", "")
+        if not want:
+            return True
+        return query.get("key") == want
+
+    def page_login(self, query):
+        if not self.admin_ok(query):
+            return self.send_json({"error": "需要正确的 key"}, 403)
+        key = query.get("key", "")
+        html = (LOGIN_TEMPLATE
+                .replace("{{KEYQ}}", ("&key=" + urllib.parse.quote(key)) if key else "")
+                .replace("{{STATE}}", "已配置" if self.app.quark.cookie else "未配置"))
+        self.send_bytes(html.encode("utf-8"), "text/html; charset=utf-8")
+
+    def qr_new(self, query):
+        if not self.admin_ok(query):
+            return self.send_json({"error": "需要正确的 key"}, 403)
+        try:
+            session = quark_login.new_session()
+        except quark_login.LoginError as exc:
+            return self.send_json({"error": str(exc)}, 502)
+        size, rows = quark_login.qr_matrix(session["url"])
+        if not size:
+            return self.send_json({"error": "二维码生成失败（segno 不可用）"}, 500)
+        self.app.qr_sessions[session["token"]] = {
+            "rid": session["request_id"], "created": time.time(),
+        }
+        # 清掉 10 分钟前的旧会话
+        now = time.time()
+        for tk in [k for k, v in self.app.qr_sessions.items()
+                   if now - v["created"] > 600]:
+            self.app.qr_sessions.pop(tk, None)
+        return self.send_json({
+            "token": session["token"], "rid": session["request_id"],
+            "url": session["url"], "size": size, "rows": rows,
+        })
+
+    def qr_poll(self, query):
+        if not self.admin_ok(query):
+            return self.send_json({"error": "需要正确的 key"}, 403)
+        token = query.get("token") or ""
+        sess = self.app.qr_sessions.get(token)
+        if not sess:
+            return self.send_json({"state": "expired", "message": "会话不存在或已过期"})
+        state, payload = quark_login.poll(token, sess["rid"])
+        if state != quark_login.CONFIRMED:
+            return self.send_json({"state": state,
+                                   "message": payload if state == quark_login.FAILED else ""})
+        try:
+            cookie, info = quark_login.exchange_cookie(payload)
+            quark_login.save_cookie(cookie)
+        except Exception as exc:  # noqa: BLE001
+            return self.send_json({"state": "failed", "message": "换取 Cookie 失败：%s" % exc})
+        self.app.quark = client_from_env()      # 热更新，无需重启
+        self.app.qr_sessions.pop(token, None)
+        nick = ((info.get("data") or {}).get("nickname")) or ""
+        self.log_message("扫码登录成功：%s", nick or "(未知昵称)")
+        return self.send_json({"state": "confirmed", "nick": nick,
+                               "message": "登录成功，已保存 Cookie"})
 
     # ---------------- TVBox 配置 ---------------- #
     def build_config(self):
@@ -347,8 +519,8 @@ class Handler(BaseHTTPRequestHandler):
         html = (PAGE_TEMPLATE
                 .replace("{{TOTAL}}", str(len(items)))
                 .replace("{{BASE}}", _esc(base))
-                .replace("{{COOKIE}}", "已配置" if self.app.quark.cookie
-                         else "未配置（只能浏览，不能取流）")
+                .replace("{{COOKIE}}", "已配置 ✅" if self.app.quark.cookie
+                         else '<a href="login" style="color:#7cc0ff">未配置 —— 点此扫码登录</a>')
                 .replace("{{NAV}}", nav)
                 .replace("{{CARDS}}", "".join(cards)))
         self.send_bytes(html.encode("utf-8"), "text/html; charset=utf-8")
