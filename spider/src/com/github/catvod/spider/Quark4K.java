@@ -40,6 +40,8 @@ public class Quark4K extends Spider {
 
     private String cookie = "";
     private String dataUrl = "";
+    private String serverUrl = "";
+    private static final String SERVER_DATA = "http://192.168.1.102:8787";
     private String saveDirFid = null;
 
     private static String dataCache = null;
@@ -68,6 +70,11 @@ public class Quark4K extends Spider {
             extraUrls.add(LOCAL_DATA);
             extraUrls.add(RAW_DATA);
             if (cookie != null && !cookie.contains("pus")) cookie = "";
+            // cookie 没填或还是占位符时，去服务端 /api/session 自动取
+            if (!authed() || cookie.startsWith("\u2190") || cookie.contains("贴")) {
+                String auto = fetchCookieFromServer();
+                if (auto != null && !auto.isEmpty()) cookie = auto;
+            }
         } catch (Throwable t) {
             // 配置坏了不该让 app 崩
         }
@@ -77,6 +84,26 @@ public class Quark4K extends Spider {
     public void init(Context context) { }
 
     private boolean authed() { return cookie != null && cookie.length() > 0; }
+
+    /** 从服务端 /api/session 取当前夸克会话（省得把 cookie 手写进配置） */
+    private String fetchCookieFromServer() {
+        java.util.List<String> servers = new java.util.ArrayList<String>();
+        if (serverUrl != null && !serverUrl.isEmpty()) servers.add(serverUrl);
+        servers.add(SERVER_DATA.length() > 0 ? SERVER_DATA : "");
+        servers.add("http://192.168.1.102:8787");
+        for (String base : servers) {
+            if (base == null || base.isEmpty()) continue;
+            try {
+                String body = http("GET", base.replaceAll("/+$", "") + "/api/session",
+                        null, null, null);
+                if (body != null && body.contains("cookie")) {
+                    String ck = J.parse(body).str("cookie");
+                    if (ck != null && ck.contains("pus")) return ck;
+                }
+            } catch (Throwable ignore) { }
+        }
+        return "";
+    }
 
     /** 目录数据（静态 anime.json），带 10 分钟内存缓存 */
     private J data() throws Exception {

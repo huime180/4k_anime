@@ -426,6 +426,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(self.app.anime)
             if path == "/meta.json":
                 return self.send_json(self.app.meta)
+            if path == "/api/session":
+                return self.session_info(query)
             if path == "/health":
                 return self.send_json({
                     "ok": True,
@@ -518,6 +520,21 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"list": [{"url": url,
                                              "header": self.app.quark.session_header()}]})
         return self._proxy(url, int(query.get("z") or 0))
+
+    def session_info(self, query):
+        """供 spider 自动取用当前夸克会话（免得把 cookie 手写进配置）。
+
+        默认只允许内网调用；若设了 ADMIN_TOKEN，则需要 ?key=<token>。
+        """
+        if not self.admin_ok(query):
+            return self.send_json({"ok": False, "error": "需要正确的 key"}, 403)
+        ck = self.app.quark.cookie or ""
+        return self.send_json({
+            "ok": bool(ck),
+            "cookie": ck,
+            "len": len(ck),
+            "hint": "把这个 cookie 交给 csp_Quark4K 即可播放" if ck else "服务端未登录，请先扫码",
+        })
 
     # ---------------- 我的云盘（纯接口，可在影视仓内完成） ---------------- #
     def _cookie_ok(self):
