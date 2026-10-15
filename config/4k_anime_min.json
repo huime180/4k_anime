@@ -1,0 +1,20 @@
+{
+ "spider": "https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/jar/4k_anime_only.jar",
+ "_说明": "最小诊断配置：只有一个 4k动漫 站点，用 jar/4k_anime_only.jar（不含饭太硬 loader/guard）。由 src/fetch_fty.py 生成。",
+ "sites": [
+  {
+   "key": "4k_anime",
+   "name": "🎬4K动漫┃夸克(自带)",
+   "type": 3,
+   "api": "csp_Quark4K",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 0,
+   "ext": {
+    "cookie": "",
+    "data": "https://huime180.github.io/4k_anime/anime.json",
+    "data2": "https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/public/anime.json"
+   }
+  }
+ ]
+}

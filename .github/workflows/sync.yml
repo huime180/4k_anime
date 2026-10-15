@@ -53,6 +53,7 @@ jobs:
           # 同步失败或工具链缺失时不覆盖已有 jar，保证配置永远可用。
           if python3 src/fetch_upstream_jar.py; then
             bash build_spider.sh || echo "⚠️ 重建失败，保留现有 jar"
+            ONLY=1 bash build_spider.sh || echo "⚠️ 小 jar 重建失败，保留现有"
           else
             echo "⚠️ 上游 jar 同步失败，保留现有 jar"
           fi

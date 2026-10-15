@@ -1,5 +1,5 @@
 {
- "spider": "https://raw.githubusercontent.com/huime180/4k_anime/main/jar/4k_anime_fty_merged.jar",
+ "spider": "https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/jar/4k_anime_fty_merged.jar",
  "wallpaper": "https://动态壁纸.饭.eu.org/",
  "sites": [
   {
@@ -38,7 +38,7 @@
    "ext": {
     "cookie": "",
     "data": "https://huime180.github.io/4k_anime/anime.json",
-    "data2": "https://raw.githubusercontent.com/huime180/4k_anime/main/public/anime.json"
+    "data2": "https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/public/anime.json"
    }
   },
   {
@@ -704,5 +704,5 @@
  ],
  "_说明": "饭太硬官方配置（自动解析） + 4k_anime 线路（csp_Anime4KGuard，插在「我的云盘」之后）",
  "_4k动漫": "目录来自 https://huime180.github.io/4k_anime/anime.json（站点不含解析）；详情/播放直接调用 jar 里饭太硬原生的夸克解析（夸克登录见「我的云盘」）。本文件由 src/fetch_fty.py 自动生成。",
- "_generated_at": "2026-10-15 15:54:51 UTC"
+ "_generated_at": "2026-10-15 16:13:24 UTC"
 }

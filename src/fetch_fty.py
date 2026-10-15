@@ -38,9 +38,14 @@ OUT_OWN = os.path.join(ROOT, "config", "4k_anime_own.json")                # 配
 # 数据源站点（只放 anime.json/meta.json/cover，不含任何解析）：默认 GitHub Pages，
 # 换 Cloudflare Pages 时把它设成 https://<项目>.pages.dev 即可（Action 里来自 vars.DATA_BASE）
 DATA_BASE = (os.environ.get("DATA_BASE") or "https://huime180.github.io/4k_anime").rstrip("/")
-DATA_RAW = ("https://raw.githubusercontent.com/huime180/4k_anime/main/public/anime.json")
-MERGED_JAR = ("https://raw.githubusercontent.com/huime180/4k_anime/main/"
-              "jar/4k_anime_fty_merged.jar")
+
+# 饭太硬官方配置里的 jar 也是套了 gh-proxy（国内直连 raw 常被墙），我们照做
+RAW_BASE = "https://raw.githubusercontent.com/huime180/4k_anime/main"
+GH = "https://gh-proxy.com/"
+DATA_RAW = GH + RAW_BASE + "/public/anime.json"
+MERGED_JAR = GH + RAW_BASE + "/jar/4k_anime_fty_merged.jar"
+ONLY_JAR = GH + RAW_BASE + "/jar/4k_anime_only.jar"           # 只含我们两个类的小 jar（诊断用）
+OUT_MIN = os.path.join(ROOT, "config", "4k_anime_min.json")   # 最小诊断配置
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -228,6 +233,9 @@ def merge(cfg: dict, host: str, kind: str = "cms") -> dict:
     cfg["sites"] = sites
     if kind in ("spider", "own"):
         cfg["spider"] = MERGED_JAR        # 必须用我们合并过的 jar：里面有 csp_Anime4KGuard / csp_Quark4K
+    elif str(cfg.get("spider", "")).startswith("https://raw.githubusercontent.com/"):
+        # cms 那份保持官方 jar，但同样套一层 gh-proxy（官方配置就是这么写的）
+        cfg["spider"] = GH + cfg["spider"]
         cfg["_说明"] = ("饭太硬官方配置（自动解析） + 4k_anime 线路（csp_Anime4KGuard，"
                         "插在「我的云盘」之后）")
         cfg["_4k动漫"] = ("目录来自 " + DATA_BASE + "/anime.json（站点不含解析）；"
@@ -249,6 +257,7 @@ def main() -> int:
     ap.add_argument("--out", default=OUT)
     ap.add_argument("--out-spider", default=OUT_SPIDER)
     ap.add_argument("--out-own", default=OUT_OWN)
+    ap.add_argument("--out-min", default=OUT_MIN)
     args = ap.parse_args()
 
     try:
@@ -275,6 +284,20 @@ def main() -> int:
             json.dump(cfg_v, fh, ensure_ascii=False, indent=1)
         outs.append((kind, path, cfg_v))
 
+    # 最小诊断配置：只有一个站点，且用「只含我们两个类」的小 jar（不含饭太硬 loader/guard）。
+    # 用它来判断「线路识别不到」是出在哪一环：
+    #   能识别 -> 我们的类和 App 加载都没问题，问题在合并 jar / 大配置；
+    #   识别不到 -> 先查配置地址本身（json、网络），再看 App 版本。
+    min_cfg = {
+        "spider": ONLY_JAR,
+        "_说明": ("最小诊断配置：只有一个 4k动漫 站点，用 jar/4k_anime_only.jar"
+                  "（不含饭太硬 loader/guard）。由 src/fetch_fty.py 生成。"),
+        "sites": [build_line(args.host, "own")],
+    }
+    os.makedirs(os.path.dirname(args.out_min), exist_ok=True)
+    with open(args.out_min, "w", encoding="utf-8") as fh:
+        json.dump(min_cfg, fh, ensure_ascii=False, indent=1)
+    print("[fty] min    api=%s -> %s" % (min_cfg["sites"][0]["api"], args.out_min))
     print("[fty] 来源: %s" % src)
     print("[fty] 站点 %d -> %d，前五个: %s"
           % (before, len(outs[0][2]["sites"]), [s.get("key") for s in outs[0][2]["sites"][:5]]))
