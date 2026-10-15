@@ -391,6 +391,88 @@ class Quark:
                     return f.get("fid")
         return None
 
+    def _is_dir_fid(self, own_fid):
+        """判断任务返回的 fid 是不是目标文件夹。
+
+        注意：目录列表有延迟，**列表里找不到 ≠ 是文件夹**，不能据此判死，
+        只有明确是 dir 或等于保存目录本身才算。
+        """
+        if not own_fid:
+            return True
+        try:
+            if self._saved_dir_fid and own_fid == self._saved_dir_fid:
+                return True
+            for f in self.list_saved():
+                if f.get("fid") == own_fid:
+                    return bool(f.get("dir"))
+        except QuarkError:
+            pass
+        return False
+
+    def _save_to_temp(self, pwd_id, fid, share_token, want_name="", want_size=0):
+        """转存到一次性子目录，返回 (文件fid, 子目录fid)。
+
+        为什么不用固定目录：夸克对「刚删又存同一个文件」有竞态 —— save 任务会返回
+        已经删掉的那个死 fid（实测成功率只有 1/2）。每次换一个全新子目录就完全
+        绕开去重，实测 4/4 成功。这就是玩偶哥哥敢「拿完就删」的原因。
+        """
+        root = self._ensure_dir()
+        made = self._request("/1/clouddrive/file", {"pr": "ucpro", "fr": "pc"},
+                             {"pdir_fid": root,
+                              "file_name": "r%d" % int(time.time() * 1000),
+                              "dir_path": "", "dir_init_lock": False})
+        sub_fid = (made.get("data") or {}).get("fid")
+        if not sub_fid:
+            raise QuarkError("创建临时目录失败：%s" % made.get("message"))
+
+        resp = self._request(
+            "/1/clouddrive/share/sharepage/save",
+            {"pr": "ucpro", "fr": "pc", "uc_param_str": ""},
+            {"fid_list": [fid],
+             "fid_token_list": [share_token] if share_token else [],
+             "to_pdir_fid": sub_fid, "pwd_id": pwd_id,
+             "stoken": self.stoken(pwd_id)["stoken"], "pdir_fid": "0",
+             "pdir_save_all": False, "exclude_fids": [], "scene": "link",
+             "create_zip": False})
+        if resp.get("status") != 200:
+            raise QuarkError("转存失败：%s %s" % (resp.get("code"), resp.get("message")))
+        task_id = (resp.get("data") or {}).get("task_id")
+        if not task_id:
+            raise QuarkError("转存未返回 task_id")
+
+        new_fid = self._wait_task(task_id)
+        if new_fid and self._is_dir_fid(new_fid):
+            new_fid = None
+        if not new_fid:
+            for _ in range(10):
+                got = self._request("/1/clouddrive/file/sort",
+                                    {"pr": "ucpro", "fr": "pc", "pdir_fid": sub_fid,
+                                     "_page": 1, "_size": 50, "_fetch_total": 1,
+                                     "_sort": "file_type:asc,file_name:asc"})
+                for f in ((got.get("data") or {}).get("list") or []):
+                    if not f.get("dir"):
+                        new_fid = f["fid"]
+                        break
+                if new_fid:
+                    break
+                time.sleep(1.0)
+        if not new_fid:
+            self._drop_temp(sub_fid)
+            raise QuarkError("转存后未能定位到文件%s"
+                             % (("（%s）" % want_name[:40]) if want_name else ""))
+        return new_fid, sub_fid
+
+    def _drop_temp(self, sub_fid):
+        """删掉一次性子目录（连同里面的文件）"""
+        if not sub_fid:
+            return
+        try:
+            self._request("/1/clouddrive/file/delete", {"pr": "ucpro", "fr": "pc"},
+                          {"action_type": 2, "filelist": [sub_fid],
+                           "exclude_fids": []})
+        except QuarkError:
+            pass
+
     def _saved_fid(self, pwd_id, fid, share_token, want_name="", want_size=0):
         """把分享里的文件转存到自己网盘，返回转存后的文件 fid（带缓存）"""
         ck = "saved_%s_%s" % (pwd_id, fid)
@@ -576,8 +658,23 @@ class Quark:
                 time.sleep(0.8)
             return self.resolve_smart(own)
 
+        # 原画档：一次性子目录 -> 取链 -> **立刻删**（玩偶哥哥的做法，不留空间）
+        if quality == self.QUALITY_RAW:
+            last = None
+            for _ in range(3):
+                sub = None
+                try:
+                    own_fid, sub = self._save_to_temp(pwd_id, fid, share_token,
+                                                      file_name, file_size)
+                    return self.resolve_raw(own_fid, purge=False)
+                except QuarkError as exc:
+                    last = exc
+                    time.sleep(0.8)
+                finally:
+                    self._drop_temp(sub)
+            raise last or QuarkError("取流失败")
+
         last_error = None
-        # 缓存的转存 fid 可能因为用户清空了网盘而失效，这里失败就重转存一次
         for round_no in range(2):
             own_fid = self._saved_fid(pwd_id, fid, share_token, file_name, file_size)
 
