@@ -1,11 +1,11 @@
-import com.github.catvod.spider.Quark4K;
+import com.github.catvod.spider.Anime4KGuard;
 import java.util.*;
 
 /** 本地跑一遍 spider：确认真能拿到「原画 / 智能」两条可播地址 */
-public class Test4K {
+public class TestAnime4K {
     public static void main(String[] args) throws Exception {
         String id = args.length > 0 ? args[0] : "fef3dd82b3eb";
-        Quark4K s = new Quark4K();
+        Anime4KGuard s = new Anime4KGuard();
         String ext = "{\"data\":\"http://127.0.0.1:8787/anime.json\"}";
         s.init(null, ext);
         System.out.println("home: " + cut(s.homeContent(false), 160));

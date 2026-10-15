@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 把我们的 csp_Quark4K 合并进饭太硬的 jar，得到一个「既有 csp_*Guard 又有 csp_Quark4K」的 jar
+# 把我们的 csp_Anime4KGuard 合并进饭太硬的 jar，得到一个「既有饭太硬原生 csp_*Guard 又有 csp_Anime4KGuard」的 jar
 # 因为 TVBox 配置里 spider 只有一个字段，要同时用两边就必须合并。
 set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -12,7 +12,7 @@ FTY="$ROOT/work/merge/fty"          # 预先解开的饭太硬 jar
 rm -rf "$ROOT/work/merge/out" "$ROOT/work/merge/pack"
 mkdir -p "$ROOT/work/merge/out" "$ROOT/work/merge/pack/assets"
 
-# 1) 饭太硬 loader.dex + 我们的 Quark4K 类 合成一个 dex
+# 1) 饭太硬 loader.dex + 我们的 Anime4KGuard 类 合成一个 dex
 "$JDK/bin/java" -cp "$T/r8.jar" com.android.tools.r8.D8 --min-api 21 \
   --output "$ROOT/work/merge/out" \
   "$FTY/classes.dex" $(find "$ROOT/spider/out/com/github/catvod/spider" -name '*.class')

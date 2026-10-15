@@ -92,7 +92,7 @@ code{background:var(--card);padding:3px 7px;border-radius:6px;border:1px solid v
 <script>
 const DIR = location.origin + location.pathname.replace(/[^/]*$/, '');
 const GH  = 'https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/config/';
-const CFG_B = GH + '4k_anime_with_fty.json';       // 饭太硬 + csp_Quark4K（站内解析）
+const CFG_B = GH + '4k_anime_with_fty.json';       // 饭太硬 + csp_Anime4KGuard（线路内解析）
 const CFG_A = GH + '4k_anime_with_fty_cms.json';   // 饭太硬 + 本机解析服务
 const state = { anime:null, meta:{}, cat:null, kw:'', live:false };
 

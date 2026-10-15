@@ -16,15 +16,19 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 4K动漫 · 夸克 spider（跑在影视仓进程内，等价于饭太硬里的 csp_*Guard）
+ * 4K动漫 · 夸克 spider（配置里写 csp_Anime4KGuard）
  *
- * 设计要点：
- *  - 目录数据来自 GitHub 上的静态 anime.json（不需要再跑 Python 服务）
- *  - 播放解析在 app 内完成：分享令牌 -> 列目录 -> 转存 -> 取直链
- *  - 返回 {parse:0, url, header}，header 里带 __puus 会话，播放器可直连 CDN
- *  - 自带极简 JSON，不依赖 org.json / okhttp / Gson
+ * 两条路：
+ *  1) 【首选】直接调用饭太硬 jar 自己的夸克解析：真正的实现类
+ *     com.github.catvod.spider.Cloud_quark 在**解密后的 dex**里（由 Init 用一个子
+ *     DexClassLoader 加载），所以要走 Init.loader() + loadClass 拿实例；
+ *     ext 原样透传给它（{"Cloud-drive": "tvfan/Cloud-drive.txt"}），
+ *     网盘 Cookie / 扫码登录（夸父扫码登录）全由饭太硬那套负责。
+ *  2) 【兜底】拿不到它的实现时，走自带的极简夸克客户端：
+ *     分享令牌 -> 列目录 -> 转存 -> file/download 直链（原画）/ file/play 转码流（智能）。
+ *     这条路需要 __puus 会话：auto 从本机 /api/session 取，或 ext.cookie 手填。
  */
-public class Quark4K extends Spider {
+public class Anime4KGuard extends Spider {
 
     private static final String PC_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             + "AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/3.14.2 "
@@ -38,6 +42,10 @@ public class Quark4K extends Spider {
             "https://raw.githubusercontent.com/huime180/4k_anime/main/public/anime.json";
     private final java.util.List<String> extraUrls = new java.util.ArrayList<String>();
 
+    private Context appContext = null;   // 转发给饭太硬自己的实现用
+    private String extRaw = "";          // ext 原文，原样透传
+    private Spider realQuark = null;     // 饭太硬 jar 里的 Cloud_quark 实例（可能为 null）
+    private boolean realTried = false;
     private String cookie = "";
     private String dataUrl = "";
     private String serverUrl = "";
@@ -56,6 +64,8 @@ public class Quark4K extends Spider {
     @Override
     public void init(Context context, String ext) {
         try {
+            appContext = context;
+            extRaw = ext == null ? "" : ext.trim();
             if (ext != null && ext.trim().startsWith("{")) {
                 J o = J.parse(ext);
                 cookie = o.str("cookie");
@@ -273,6 +283,19 @@ public class Quark4K extends Spider {
             if (item == null) return fail("找不到该条目");
             String pwd = item.str("pwd_id");
             if (pwd.isEmpty()) return fail("该条目不是夸克分享（网盘：" + item.str("drive_name") + "）");
+
+            // 先把剧集交给饭太硬自己的夸克解析（和玩偶哥哥同一条路），成功就用它的播放列表
+            String[] theirs = realDetail(pwd);
+            if (theirs != null) {
+                return "{\"list\":[{\"vod_id\":\"4k:" + Json.esc(id) + "\""
+                        + ",\"vod_name\":" + J.q(item.str("name"))
+                        + ",\"vod_pic\":" + J.q(item.str("vod_pic"))
+                        + ",\"vod_content\":" + J.q("画质 " + item.str("resolution")
+                            + " ｜ 修复 " + item.str("model") + " ｜ 解析：饭太硬原生（" + theirs[0] + "）")
+                        + ",\"vod_play_from\":" + J.q(theirs[0])
+                        + ",\"vod_play_url\":" + J.q(theirs[1])
+                        + "}]}";
+            }
             String stoken = stoken(pwd);
             List<J> root = listDir(pwd, stoken, "0");
             String startFid = "0";
@@ -347,11 +370,61 @@ public class Quark4K extends Spider {
         }
     }
 
+    /* ===================== 直接调用饭太硬 jar 自己的夸克解析 ===================== */
+
+    /**
+     * 拿到饭太硬 jar 里的夸克实现（com.github.catvod.spider.Cloud_quark）。
+     *
+     * 关键点：饭太硬把真正的实现类放在**解密后的 dex** 里，用 Init 里的子
+     * DexClassLoader 加载（loader dex 里的 *Guard 只是转发壳）。我们的类在 app
+     * 的 ClassLoader 里，父加载器看不到子加载器的类，所以只能走 Init.loader()。
+     */
+    private Spider real() {
+        if (realTried) return realQuark;
+        realTried = true;
+        try {
+            ClassLoader cl = Init.loader();
+            if (cl == null) return null;
+            Class<?> c = cl.loadClass("com.github.catvod.spider.Cloud_quark");
+            Spider s = (Spider) c.newInstance();
+            // ext 原样透传：Cloud-drive / 网盘登录后的会话都由它自己维护
+            s.init(appContext, extRaw.isEmpty() ? "{}" : extRaw);
+            realQuark = s;
+        } catch (Throwable t) {
+            realQuark = null;
+        }
+        return realQuark;
+    }
+
+    /** 用饭太硬的实现解析这个分享，返回 {vod_play_from, vod_play_url}；失败返回 null */
+    private String[] realDetail(String pwd) {
+        try {
+            Spider rq = real();
+            if (rq == null) return null;
+            String json = rq.detailContent(java.util.Arrays.asList("https://pan.quark.cn/s/" + pwd));
+            if (json == null || json.length() < 20) return null;
+            List<J> list = J.parse(json).arr("list");
+            if (list.isEmpty()) return null;
+            String from = list.get(0).str("vod_play_from");
+            String url = list.get(0).str("vod_play_url");
+            if (from.isEmpty() || url.isEmpty()) return null;
+            return new String[]{from, url};
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     /* ===================== 播放：转存 + 取流（原画 / 智能） ===================== */
 
     @Override
     public String playerContent(String flag, String id, List<String> vipFlags) {
         try {
+            // 不是我们自己造的 id（4k:play:...）就说明它来自饭太硬自己的解析，原样转发
+            if (!id.startsWith("4k:play:")) {
+                Spider rq = real();
+                if (rq != null) return rq.playerContent(flag, id, vipFlags);
+                return media("播放地址来自饭太硬的解析，但拿不到它的实现类");
+            }
             if (!authed()) return media("未配置 quarkCookie：请在配置的 ext 里填 {\"cookie\":\"__puus=...\"}");
             String[] p = id.split(":");   // 4k:play:<pwd>:<fid>:<share_token>[:r|s]
             if (p.length < 5) return media("播放地址格式错误");

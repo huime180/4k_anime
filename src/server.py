@@ -534,7 +534,7 @@ class Handler(BaseHTTPRequestHandler):
             "cookie": ck,
             "len": len(ck),
             "puus": "__puus" in ck,
-            "hint": "把这个 cookie 交给 csp_Quark4K 即可播放" if ck else "服务端未登录，请先扫码",
+            "hint": "把这个 cookie 交给 csp_Anime4KGuard（或让 jar 自己扫码登录）" if ck else "服务端未登录，请先扫码",
         })
 
     # ---------------- 我的云盘（纯接口，可在影视仓内完成） ---------------- #

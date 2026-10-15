@@ -20,6 +20,7 @@ config/4k_anime_with_fty_cms.json，供 GitHub Actions 定时自动更新。
 from __future__ import annotations
 
 import argparse
+import copy
 import base64
 import json
 import os
@@ -30,7 +31,10 @@ import urllib.error
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "config", "4k_anime_with_fty_cms.json")
+OUT = os.path.join(ROOT, "config", "4k_anime_with_fty_cms.json")          # A 版：type 1，走本机解析服务
+OUT_SPIDER = os.path.join(ROOT, "config", "4k_anime_with_fty.json")        # B 版：type 3，线路内解析
+MERGED_JAR = ("https://raw.githubusercontent.com/huime180/4k_anime/main/"
+              "jar/4k_anime_fty_merged.jar")
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -148,8 +152,27 @@ def load_base(source: str) -> tuple[dict, str]:
     raise RuntimeError("所有来源都拿不到饭太硬配置")
 
 
-def build_line(host: str) -> dict:
+def build_line(host: str, kind: str = "cms") -> dict:
+    """两种线路写法：
+
+    cms    —— type 1，苹果CMS：api 指到本机 server.py 的 /api.php/provide/vod/
+              （分类/列表/详情/播放全在服务端算，服务端必须在线）
+    spider —— type 3，csp_Anime4KGuard：跑在我们合并进饭太硬 jar 的那个类里，
+              ext 就写饭太硬自己的网盘配置字段 Cloud-drive，
+              解析/cookie/扫码登录都交给 jar 里饭太硬原生的夸克实现。
+    """
     host = host.rstrip("/")
+    if kind == "spider":
+        return {
+            "key": "4k_anime",
+            "name": "🎬4K动漫┃夸克",
+            "type": 3,
+            "api": "csp_Anime4KGuard",
+            "searchable": 1,
+            "quickSearch": 1,
+            "changeable": 0,
+            "ext": {"Cloud-drive": "tvfan/Cloud-drive.txt"},
+        }
     return {
         "key": "4k_anime",
         "name": "🎬4K动漫┃夸克",
@@ -162,7 +185,7 @@ def build_line(host: str) -> dict:
     }
 
 
-def merge(cfg: dict, host: str) -> dict:
+def merge(cfg: dict, host: str, kind: str = "cms") -> dict:
     sites = list(cfg.get("sites") or [])
     sites = [s for s in sites if s.get("key") != "4k_anime"]      # 幂等：先去掉旧的
     at = 1
@@ -170,12 +193,20 @@ def merge(cfg: dict, host: str) -> dict:
         if s.get("key") in ANCHOR_KEYS:
             at = i + 1
             break
-    sites.insert(at, build_line(host))
+    sites.insert(at, build_line(host, kind))
     cfg["sites"] = sites
-    cfg["_说明"] = ("饭太硬官方配置（自动解析） + 4k_anime 线路"
-                    "（插在「我的云盘」之后）")
-    cfg["_4k动漫"] = ("由 huime180/4k_anime 维护：表格定时自动同步 -> anime.json；"
-                      "解析取流由本项目服务提供。本文件由 src/fetch_fty.py 自动生成。")
+    if kind == "spider":
+        cfg["spider"] = MERGED_JAR        # 必须用我们合并过的 jar：里面有 csp_Anime4KGuard
+        cfg["_说明"] = ("饭太硬官方配置（自动解析） + 4k_anime 线路（csp_Anime4KGuard，"
+                        "插在「我的云盘」之后）")
+        cfg["_4k动漫"] = ("目录来自 huime180/4k_anime 定时同步的 anime.json；"
+                          "详情/播放直接调用 jar 里饭太硬原生的夸克解析（夸克登录见「我的云盘」）。"
+                          "本文件由 src/fetch_fty.py 自动生成。")
+    else:
+        cfg["_说明"] = ("饭太硬官方配置（自动解析） + 4k_anime 线路"
+                        "（插在「我的云盘」之后）")
+        cfg["_4k动漫"] = ("由 huime180/4k_anime 维护：表格定时自动同步 -> anime.json；"
+                          "解析取流由本项目服务提供。本文件由 src/fetch_fty.py 自动生成。")
     cfg["_generated_at"] = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
     return cfg
 
@@ -185,6 +216,7 @@ def main() -> int:
     ap.add_argument("--source", default="auto", choices=["auto", "official", "mirror"])
     ap.add_argument("--host", default=DEFAULT_HOST)
     ap.add_argument("--out", default=OUT)
+    ap.add_argument("--out-spider", default=OUT_SPIDER)
     args = ap.parse_args()
 
     try:
@@ -195,18 +227,24 @@ def main() -> int:
             return 0
         raise
     before = len(cfg.get("sites") or [])
-    merge(cfg, args.host)
 
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
-    with open(args.out, "w", encoding="utf-8") as fh:
-        json.dump(cfg, fh, ensure_ascii=False, indent=1)
+    outs = []
+    for kind, path in (("cms", args.out), ("spider", args.out_spider)):
+        cfg_v = copy.deepcopy(cfg)
+        merge(cfg_v, args.host, kind)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(cfg_v, fh, ensure_ascii=False, indent=1)
+        outs.append((kind, path, cfg_v))
 
-    keys = [s.get("key") for s in cfg["sites"][:5]]
     print("[fty] 来源: %s" % src)
-    print("[fty] spider: %s" % str(cfg.get("spider"))[:78])
-    print("[fty] 站点 %d -> %d，前五个: %s" % (before, len(cfg["sites"]), keys))
-    print("[fty] 4k动漫接口: %s" % args.host.rstrip("/"))
-    print("[fty] 输出: %s" % args.out)
+    print("[fty] 站点 %d -> %d，前五个: %s"
+          % (before, len(outs[0][2]["sites"]), [s.get("key") for s in outs[0][2]["sites"][:5]]))
+    for kind, path, cfg_v in outs:
+        line = [s for s in cfg_v["sites"] if s.get("key") == "4k_anime"][0]
+        print("[fty] %-6s api=%-18s -> %s" % (kind, line.get("api"), path))
+        if kind == "spider":
+            print("[fty] spider jar: %s" % cfg_v.get("spider"))
     return 0
 
 

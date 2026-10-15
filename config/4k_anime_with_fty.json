@@ -31,14 +31,12 @@
    "key": "4k_anime",
    "name": "🎬4K动漫┃夸克",
    "type": 3,
-   "api": "csp_Quark4K",
+   "api": "csp_Anime4KGuard",
    "searchable": 1,
    "quickSearch": 1,
    "changeable": 0,
    "ext": {
-    "cookie": "贴你的 __puus=... 到这里",
-    "data": "https://huime180.github.io/4k_anime/anime.json",
-    "data2": "http://192.168.1.102:8787/anime.json"
+    "Cloud-drive": "tvfan/Cloud-drive.txt"
    }
   },
   {
@@ -702,7 +700,7 @@
    "ua": "okHttp/Mod-1.5.0.0"
   }
  ],
- "_说明": "饭太硬官方配置（自动解析） + 4k_anime 线路（插在「我的云盘」之后）",
- "_4k动漫": "由 actions 每 30 分钟重新生成（src/fetch_fty.py），手工改动会被覆盖。",
- "_generated_at": "2026-10-15 14:07:33 UTC"
+ "_说明": "饭太硬官方配置（自动解析） + 4k_anime 线路（csp_Anime4KGuard，插在「我的云盘」之后）",
+ "_4k动漫": "目录来自 huime180/4k_anime 定时同步的 anime.json；详情/播放直接调用 jar 里饭太硬原生的夸克解析（夸克登录见「我的云盘」）。本文件由 src/fetch_fty.py 自动生成。",
+ "_generated_at": "2026-10-15 14:55:18 UTC"
 }

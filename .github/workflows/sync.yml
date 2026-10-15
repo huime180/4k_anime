@@ -45,6 +45,16 @@ jobs:
           # 抓不到时脚本会保留现有配置不覆盖，所以这里失败不影响后面
           python3 src/fetch_fty.py --host "${PUBLIC_BASE:-http://192.168.1.102:8787}"
 
+      - name: 跟随饭太硬官方 jar 重建合并 jar（拿不到就保持现有 jar）
+        run: |
+          # 官方 jar 伪装成 .jpg，这里校验 md5 并解包到 work/merge/fty；
+          # 同步失败或工具链缺失时不覆盖已有 jar，保证配置永远可用。
+          if python3 src/fetch_upstream_jar.py; then
+            bash build_spider.sh || echo "⚠️ 重建失败，保留现有 jar"
+          else
+            echo "⚠️ 上游 jar 同步失败，保留现有 jar"
+          fi
+
       - name: 生成「玩偶哥哥式」静态站（供 csp_WoGGGuard 抓取）
         run: python3 src/build_site.py
 
@@ -57,6 +67,9 @@ jobs:
 
       - name: 生成统一首页（本机 / Pages 同一份 public/index.html）
         run: python3 src/build_web.py
+
+      - name: 配置自检（配置里的 csp_X 必须在 jar 里有）
+        run: python3 src/check_config.py
 
       - name: 提交数据变更
         run: |
