@@ -32,6 +32,12 @@ public class Quark4K extends Spider {
     private static final String API = "https://drive-pc.quark.cn/1/clouddrive";
     private static final String SAVE_DIR = "4k_anime";
 
+    // 数据源回退链：ext 里的 data / data2 / data3 -> 本机服务 -> GitHub raw
+    private static final String LOCAL_DATA = "http://192.168.1.102:8787/anime.json";
+    private static final String RAW_DATA =
+            "https://raw.githubusercontent.com/huime180/4k_anime/main/public/anime.json";
+    private final java.util.List<String> extraUrls = new java.util.ArrayList<String>();
+
     private String cookie = "";
     private String dataUrl = "";
     private String saveDirFid = null;
@@ -51,9 +57,16 @@ public class Quark4K extends Spider {
                 J o = J.parse(ext);
                 cookie = o.str("cookie");
                 dataUrl = o.str("data");
+                // 多源回退：跨境时 GitHub Pages 常拉不到，这里可配备用地址
+                String d2 = o.str("data2"), d3 = o.str("data3");
+                if (!d2.isEmpty()) extraUrls.add(d2);
+                if (!d3.isEmpty()) extraUrls.add(d3);
             } else if (ext != null && !ext.trim().isEmpty()) {
                 dataUrl = ext.trim();
             }
+            // 兜底源：本机服务 -> GitHub raw
+            extraUrls.add(LOCAL_DATA);
+            extraUrls.add(RAW_DATA);
             if (cookie != null && !cookie.contains("pus")) cookie = "";
         } catch (Throwable t) {
             // 配置坏了不该让 app 崩
@@ -69,10 +82,25 @@ public class Quark4K extends Spider {
     private J data() throws Exception {
         long now = System.currentTimeMillis();
         if (dataCache != null && now - dataCacheAt < 600000) return J.parse(dataCache);
-        if (dataUrl == null || dataUrl.isEmpty()) dataCache = "{\"items\":[],\"classes\":[]}";
-        else dataCache = http("GET", dataUrl, null, null, null);
-        dataCacheAt = now;
-        return J.parse(dataCache);
+        java.util.List<String> urls = new java.util.ArrayList<String>();
+        if (dataUrl != null && !dataUrl.isEmpty()) urls.add(dataUrl);
+        urls.addAll(extraUrls);
+        Exception last = null;
+        for (String u : urls) {
+            try {
+                String body = http("GET", u, null, null, null);
+                if (body != null && body.contains("\"items\"")) {
+                    dataCache = body;
+                    dataCacheAt = now;
+                    return J.parse(dataCache);
+                }
+                last = new Exception("源不含 items: " + u);
+            } catch (Exception e) {
+                last = e;
+            }
+        }
+        if (dataCache != null) return J.parse(dataCache);   // 有旧缓存就用旧的
+        throw last == null ? new Exception("no data source") : last;
     }
 
     /* ===================== 首页 / 分类 / 搜索 ===================== */
