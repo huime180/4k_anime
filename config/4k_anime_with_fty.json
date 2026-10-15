@@ -4,7 +4,7 @@
  "sites": [
   {
    "key": "点我切源",
-   "name": "豆豆┃片单",
+   "name": "豆豆┃片单 <修复漫剧、海绵>",
    "type": 3,
    "api": "csp_DouDouGuard",
    "indexs": 1,
@@ -34,10 +34,11 @@
    "api": "csp_Quark4K",
    "searchable": 1,
    "quickSearch": 1,
-   "changeable": 1,
+   "changeable": 0,
    "ext": {
-    "Cloud-drive": "tvfan/Cloud-drive.txt",
-    "data": "https://huime180.github.io/4k_anime/anime.json"
+    "cookie": "贴你的 __puus=... 到这里",
+    "data": "https://huime180.github.io/4k_anime/anime.json",
+    "data2": "http://192.168.1.102:8787/anime.json"
    }
   },
   {
@@ -115,6 +116,17 @@
    "api": "csp_NewCzGuard",
    "timeout": 10,
    "playerType": 2,
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1
+  },
+  {
+   "key": "海绵",
+   "name": "🐬海绵┃不卡",
+   "type": 3,
+   "api": "csp_HmysGuard",
+   "timeout": 10,
+   "playerType": "2",
    "searchable": 1,
    "quickSearch": 1,
    "changeable": 1
@@ -259,7 +271,7 @@
    "ext": {
     "type": "video",
     "name": "短剧",
-    "DanMu": false
+    "danMu": false
    },
    "indexs": 0,
    "quickSearch": 1,
@@ -690,6 +702,7 @@
    "ua": "okHttp/Mod-1.5.0.0"
   }
  ],
- "_说明": "饭太硬官方配置（app 同源）+ 4k动漫线路（csp_Quark4K，插在「我的云盘」之后）；spider 为合并 jar",
- "_4k动漫": "目录与解析均由本项目提供（csp_Quark4K）。待重建 jar 后可切到 csp_4KAnimeGuard（解析交给饭太硬 Cloud_quark）。"
+ "_说明": "饭太硬官方配置（自动解析） + 4k_anime 线路（插在「我的云盘」之后）",
+ "_4k动漫": "由 actions 每 30 分钟重新生成（src/fetch_fty.py），手工改动会被覆盖。",
+ "_generated_at": "2026-10-15 14:07:33 UTC"
 }

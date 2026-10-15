@@ -197,9 +197,9 @@ public class Quark4K extends Spider {
             String id = ids.get(0).replace("4k:", "");
             J item = null;
             for (J it : data().arr("items")) if (it.str("id").equals(id)) { item = it; break; }
-            if (item == null) return "";
+            if (item == null) return fail("找不到该条目");
             String pwd = item.str("pwd_id");
-            if (pwd.isEmpty()) return "";
+            if (pwd.isEmpty()) return fail("该条目不是夸克分享（网盘：" + item.str("drive_name") + "）");
             String stoken = stoken(pwd);
             List<J> root = listDir(pwd, stoken, "0");
             String startFid = "0";
@@ -223,11 +223,16 @@ public class Quark4K extends Spider {
                     + ",\"vod_play_from\":\"原画\",\"vod_play_url\":" + J.q(urls.toString())
                     + "}]}";
         } catch (Throwable t) {
-            return "";
+            return fail("详情解析失败：" + t.getMessage());
         }
     }
 
     /** 在分享树里按番名找最匹配的子目录（整季合集场景） */
+    /** 统一的失败返回：必须是合法 JSON，否则客户端会报「JSON解析失败」 */
+    private String fail(String msg) {
+        return "{\"list\":[],\"msg\":" + J.q(msg) + "}";
+    }
+
     private String findDir(String pwd, String stoken, List<J> roots, String name) throws Exception {
         for (J d : roots) {
             if (!"true".equals(d.str("dir")) && !"1".equals(d.str("dir"))) continue;
