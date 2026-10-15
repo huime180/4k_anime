@@ -7,18 +7,18 @@
       "key": "4k_anime",
       "name": "🎬4K动漫┃夸克",
       "type": 1,
-      "api": "http://192.168.1.102:8787/api.php/provide/vod/",
+      "api": "http://127.0.0.1:8787/api.php/provide/vod/",
       "searchable": 1,
       "quickSearch": 1,
       "filterable": 1,
-      "ext": "http://192.168.1.102:8787/api.php/provide/vod/"
+      "ext": "http://127.0.0.1:8787/api.php/provide/vod/"
     }
   ],
   "parses": [
     {
       "name": "4K动漫直链",
       "type": 0,
-      "url": "http://192.168.1.102:8787/play?url=",
+      "url": "http://127.0.0.1:8787/play?url=",
       "ext": {
         "flag": [
           "qq",
