@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import base64
 import json
 import os
@@ -46,6 +47,22 @@ DATA_RAW = GH + RAW_BASE + "/public/anime.json"
 MERGED_JAR = GH + RAW_BASE + "/jar/4k_anime_fty_merged.jar"
 ONLY_JAR = GH + RAW_BASE + "/jar/4k_anime_only.jar"           # 只含我们两个类的小 jar（诊断用）
 UPSTREAM_INFO = os.path.join(ROOT, "data", "upstream.json")   # 上游官方 jar 的地址+md5
+JAR_DIR = os.path.join(ROOT, "jar")
+
+
+def jar_spec(url: str, filename: str) -> str:
+    """给 jar 地址带上 `;md5;<md5>`。
+
+    App 靠这个 md5 判断缓存是否过期：jar 内容一变（我们每次重建都会变），
+    带上新的 md5 它才会重新下载 —— 否则一直用旧的缓存 jar
+    （表现就是「线路表里还是旧的名字，比如 夸父原1/夸父智1」）。
+    """
+    path = os.path.join(JAR_DIR, filename)
+    try:
+        with open(path, "rb") as fh:
+            return url + ";md5;" + hashlib.md5(fh.read()).hexdigest()
+    except OSError:
+        return url
 
 
 def official_jar() -> str:
@@ -203,7 +220,7 @@ def build_line(host: str, kind: str = "cms") -> dict:
             "type": 3,
             "api": "csp_Anime4KGuard",
             "timeout": 30,
-            "jar": MERGED_JAR,     # 只给这一条线用的 jar：官方 jar 仍归其它线路使用
+            "jar": jar_spec(MERGED_JAR, "4k_anime_fty_merged.jar"),   # 只给这一条线用（带 md5，jar 一变就会重下）
             "searchable": 1,
             "quickSearch": 1,
             "changeable": 0,
@@ -223,7 +240,7 @@ def build_line(host: str, kind: str = "cms") -> dict:
             "type": 3,
             "api": "csp_Quark4K",
             "timeout": 30,
-            "jar": ONLY_JAR,       # 自带解析不依赖饭太硬的 loader/guard，用只有我们类的小 jar
+            "jar": jar_spec(ONLY_JAR, "4k_anime_only.jar"),           # 自带解析不依赖 loader/guard
             "searchable": 1,
             "quickSearch": 1,
             "changeable": 0,
@@ -314,7 +331,7 @@ def main() -> int:
     #   能识别 -> 我们的类和 App 加载都没问题，问题在合并 jar / 大配置；
     #   识别不到 -> 先查配置地址本身（json、网络），再看 App 版本。
     min_cfg = {
-        "spider": ONLY_JAR,
+        "spider": jar_spec(ONLY_JAR, "4k_anime_only.jar"),
         "_说明": ("最小诊断配置：只有一个 4k动漫 站点，用 jar/4k_anime_only.jar"
                   "（不含饭太硬 loader/guard）。由 src/fetch_fty.py 生成。"),
         "sites": [build_line(args.host, "own")],
