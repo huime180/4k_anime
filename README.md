@@ -1,43 +1,70 @@
 # 4k_anime · 4K 动漫夸克接口
 
-把一份**在线更新的 4K 动漫表格**自动同步成一套 **TVBox 可直接使用的接口**：
-分类、封面、剧集列表全部自动生成，播放时由本项目的解析器把**夸克网盘分享链接**
-换成可直接播放的直链——用法和「饭太硬」里的 **玩偶哥哥（玩偶哥哥┃4K弹幕）** 一个路子。
-
-* 数据源：在线表格 `ec61d240-…`（Luckysheet 结构，源自 Google Sheet，约 10 分钟同步一次）
-* 内容规模：**771 条 / 563 个独立夸克分享**，共 3 个顶层分类、19 个类别
-* 项目语言：**Python 3.9+，零第三方依赖**（只用标准库）
-* 自动同步：GitHub Actions **每周一**拉一次表格，重新生成数据与配置
+把一份**在线更新的 4K 动漫表格**自动同步成一套影视仓（TVBox）接口：
+分类、封面、剧集列表自动生成，**解析全部在影视仓 App 内完成**。
 
 ```
-表格(在线,自动更新) ──► GitHub Actions 定时同步 ──► data/anime.json + data/meta.json
-                                                      │
-                            TVBox ◄── /4k_anime.json ─┘
-                              │
-                              ├─ /api.php/provide/vod/   ← 苹果CMS(type=1) 接口
-                              ├─ /spider/{home,category,detail,play}  ← 玩偶哥哥式 spider 接口
-                              └─ /play?pwd=&fid=&ft=     ← 夸克分享 → 可播放直链
+       在线表格 ──► GitHub Actions（每周） ──► data/anime.json + meta.json
+                                                    │
+                                    数据站（纯静态，可上 Cloudflare Pages）
+                                    anime.json / meta.json / cover/*.png / 索引页
+                                                    │
+                    影视仓 载入配置 A 或 B ◄────────┘
+                       │
+                       ├─ 配置 A：csp_Anime4KGuard  →  调 jar 里**饭太硬自己的**夸克解析
+                       │                              （夸父原 / 夸父智，/proxy/play/... 代理直链）
+                       └─ 配置 B：csp_Quark4K        →  **我们自己的**解析（转存 + 取链，
+                                                      夸父原 / 夸父智，CDN 直链 + header）
 ```
+
+* 数据源：在线表格 `ec61d240-…`（Luckysheet 结构，源自 Google Sheet）
+* 内容规模：**771 条 / 563 个独立夸克分享**，3 个顶层分类、19 个类别
+* 运行依赖：数据站是**纯静态**；A/B 两条线的解析都在 App 内，**不需要**本机服务
+* 自动同步：GitHub Actions **每周一**拉一次表格，跟随饭太硬官方 jar 重建合并 jar，并部署数据站
 
 ---
 
-## 一、它解决了什么
+## 一、两份配置地址（选一个导入影视仓）
 
-| 需求 | 实现 |
+| | 线路 | 解析在哪 | 会话（夸克 Cookie）从哪来 |
+| --- | --- | --- | --- |
+| **A** | `csp_Anime4KGuard` | jar 里**饭太硬自己的**夸克实现（和玩偶哥哥同一条路） | ① 在「🗂我的云盘┃配置」里扫码登录；② 或给 `ext.session` 一个返回 `{"quarkCookie": …}` 的地址 |
+| **B** | `csp_Quark4K` | **我们自己**的夸克客户端（转存到自己网盘后取流） | ① `ext.cookie` 手填；② 反射读饭太硬那套的登录态（扫码后即有，零配置）；③ 本机 `server.py` 的 `/api/session` 兜底 |
+
+```
+A: https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/config/4k_anime_with_fty.json
+B: https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/config/4k_anime_own.json
+```
+（换 jar 版本后导入要带 `?t=<时间戳>` 穿透缓存。旧方案 `config/4k_anime_with_fty_cms.json`
+是 type 1 苹果CMS、需要本机 `server.py`，保留兼容。）
+
+两份配置都是「饭太硬官方配置 + 我们的这条线」，插在「🗂我的云盘┃配置」之后；
+`ext.data` 指向数据站，`ext.data2` 是 GitHub raw 兜底（可由 `DATA_BASE` 仓库变量切换）。
+
+## 二、数据站（只放数据，不含解析）
+
+`public/` 就是数据站根目录：`anime.json` / `meta.json` / `cover/*.png` / `index.html`。
+
+* 现在默认发布在 GitHub Pages：<https://huime180.github.io/4k_anime/>
+* 搬到 Cloudflare Pages 见 [`docs/cloudflare-pages.md`](docs/cloudflare-pages.md)（三步，不用写代码）
+
+## 三、jar（`jar/4k_anime_fty_merged.jar`）
+
+饭太硬官方 jar（其 `spider` 字段现在伪装成 `.jpg`，带 `;md5;` 校验）+ 我们两个类：
+
+| 类 | 作用 |
 | --- | --- |
-| 直接给 TVBox 一个配置地址 | `GET /4k_anime.json`，也有一份静态版在 `public/4k_anime.json` |
-| 像玩偶哥哥那样的接口 | `GET /spider/home`、`/spider/category`、`/spider/detail`、`/spider/play` |
-| 通用 TVBox 也能用 | `GET /api.php/provide/vod/?ac=list` / `?ac=detail`（标准苹果CMS JSON） |
-| 解析播放夸克链接 | `GET /play?pwd=<分享ID>&fid=<文件ID>&ft=<分享令牌>` → `302` 到直链，或 `&proxy=1` 反代 |
-| **我的云盘┃配置** | CMS 里的伪分类：① 账号状态 ② 扫码登录 ③ 清除账号 ④ 清空转存缓存，**在影视仓内即可完成** |
-| 夸克扫码登录 | 详情页封面直接就是二维码，服务端后台轮询，扫完自动保存 Cookie 并热生效 |
-| 视频有封面 | Bangumi 封面自动匹配；匹配不到时由服务端实时生成占位封面 PNG |
-| 自动同步表格 | `.github/workflows/sync.yml`，每周一自动拉取并提交 |
-| 按表格分类继续分类 | `每周更新`(15 个季度子类) / `TV动画合集` / `其余群友资源合集`(含子类) |
+| `Anime4KGuard` | 配置 A：详情/播放原样转发给解密 dex 里的 `Cloud_quark`（经 `Init.loader()`） |
+| `Quark4K` | 配置 B：自带的极简夸克客户端（转存 + `/file/download` 直链 / `/file/play` 转码流） |
 
----
+每次 Action 会 `src/fetch_upstream_jar.py` 跟随官方 jar（校验 md5、解包）→
+`build_spider.sh`（javac + d8 合并）→ 提交新 jar；拿不到就保留现有 jar。
+`data/upstream.json` 记录上游 jar / guard 的 md5。
 
-## 二、快速开始
+## 四、可选：本机服务（旧方案 / B 的兜底）
+
+`src/server.py` 仍然提供苹果CMS(type=1) 接口、玩偶哥哥式 `/spider/*`、`/play` 取流、
+扫码登录页 `/login`、`/api/session`（给 B 兜底）等。需要时：
 
 ### 1. 本地跑起来
 

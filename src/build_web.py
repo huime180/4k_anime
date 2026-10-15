@@ -79,10 +79,12 @@ code{background:var(--card);padding:3px 7px;border-radius:6px;border:1px solid v
 <footer>
   <h3>怎么用</h3>
   ① 下面第一条地址是 <b>饭太硬配置 + 4k动漫线路</b>，直接粘进「影视仓/电视 TVBox」的设置 → 配置地址即可；
-  A 版那条会多出一条走本机解析服务的线路（需要这台机器上的 <code>server.py</code> 在跑）。<br>
+  A 那条用 jar 里饭太硬自己的夸克解析（和玩偶哥哥同一条路），B 那条用我们自己的解析；
+  两条都在影视仓里跑，<b>不需要</b>任何服务端解析。<br>
   <h3 style="margin-top:14px">配置地址</h3>
-  <div class="cfg"><span>B 版（线路内解析，推荐）</span><code id="cfgB"></code><span class="copy" data-t="cfgB">复制</span></div>
-  <div class="cfg"><span>A 版（走本机解析服务）</span><code id="cfgA"></code><span class="copy" data-t="cfgA">复制</span></div>
+  <div class="cfg"><span>配置 A（饭太硬自己的夸克解析，推荐）</span><code id="cfgA"></code><span class="copy" data-t="cfgA">复制</span></div>
+  <div class="cfg"><span>配置 B（我们自己的夸克解析）</span><code id="cfgB"></code><span class="copy" data-t="cfgB">复制</span></div>
+  <div class="cfg"><span>旧方案（type 1 苹果CMS，需要本机 server.py）</span><code id="cfgC"></code><span class="copy" data-t="cfgC">复制</span></div>
   <div class="cfg" id="localRow" style="display:none"><span>本机直连配置</span><code id="cfgL"></code><span class="copy" data-t="cfgL">复制</span></div>
   <div class="cfg"><span>本页数据源</span><code id="cfgData"></code></div>
   <p id="hint" style="margin-top:12px"></p>
@@ -92,8 +94,9 @@ code{background:var(--card);padding:3px 7px;border-radius:6px;border:1px solid v
 <script>
 const DIR = location.origin + location.pathname.replace(/[^/]*$/, '');
 const GH  = 'https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/config/';
-const CFG_B = GH + '4k_anime_with_fty.json';       // 饭太硬 + csp_Anime4KGuard（线路内解析）
-const CFG_A = GH + '4k_anime_with_fty_cms.json';   // 饭太硬 + 本机解析服务
+const CFG_A = GH + '4k_anime_with_fty.json';       // 配置 A：csp_Anime4KGuard（饭太硬自己的夸克解析）
+const CFG_B = GH + '4k_anime_own.json';            // 配置 B：csp_Quark4K（我们自己的解析）
+const CFG_C = GH + '4k_anime_with_fty_cms.json';   // 旧方案：type 1，需要本机 server.py
 const state = { anime:null, meta:{}, cat:null, kw:'', live:false };
 
 function normalizeName(s){
@@ -165,7 +168,7 @@ async function env(){
         document.getElementById('login').style.display = 'inline-block';
         document.getElementById('cfgL').textContent = DIR + '4k_anime.json';
         document.getElementById('localRow').style.display = 'flex';
-        document.getElementById('hint').textContent = '本页由本机解析服务提供，播放走 4k动漫 线路（原画 / 智能 两档）。';
+        document.getElementById('hint').textContent = '本页由本机解析服务提供（可选）；A/B 两条线路的解析都在影视仓里跑。';
         return;
       }
     }
@@ -173,11 +176,12 @@ async function env(){
   document.getElementById('mode').textContent = 'GitHub Pages · 静态索引';
   document.getElementById('mode').className = 'tag';
   document.getElementById('hint').textContent = '当前是 GitHub Pages 上的静态索引：能浏览、能复制配置地址，'
-    + '但「取流解析」需要本机 server.py 在跑（同一 WiFi 下打开 http://192.168.1.102:8787/ 就是本机版）。';
+    + '配置 A/B 的解析都在影视仓里完成，不需要服务端；这里只是索引 + 数据。';
 }
 (async function(){
-  document.getElementById('cfgB').textContent = CFG_B;
   document.getElementById('cfgA').textContent = CFG_A;
+  document.getElementById('cfgB').textContent = CFG_B;
+  document.getElementById('cfgC').textContent = CFG_C;
   document.getElementById('cfgData').textContent = DIR + 'anime.json';
   document.querySelectorAll('.copy').forEach(el=>el.onclick=()=>{
     const t = document.getElementById(el.dataset.t).textContent;
