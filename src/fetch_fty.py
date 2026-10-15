@@ -43,7 +43,7 @@ DATA_BASE = (os.environ.get("DATA_BASE") or "https://huime180.github.io/4k_anime
 # 饭太硬官方配置里的 jar 也是套了 gh-proxy（国内直连 raw 常被墙），我们照做
 RAW_BASE = "https://raw.githubusercontent.com/huime180/4k_anime/main"
 GH = "https://gh-proxy.com/"
-DATA_RAW = GH + RAW_BASE + "/public/anime.json"
+DATA_RAW_RAW = RAW_BASE + "/public/anime.json"
 MERGED_JAR = GH + RAW_BASE + "/jar/4k_anime_fty_merged.jar"
 ONLY_JAR = GH + RAW_BASE + "/jar/4k_anime_only.jar"           # 只含我们两个类的小 jar（诊断用）
 UPSTREAM_INFO = os.path.join(ROOT, "data", "upstream.json")   # 上游官方 jar 的地址+md5
@@ -65,23 +65,38 @@ def jar_spec(url: str, filename: str) -> str:
         return url
 
 
+def gh_wrap(url: str) -> str:
+    """只对 github 系地址套 gh-proxy。
+
+    gh-proxy 是给 raw.githubusercontent/github 用的：官方 jar 现在挂在
+    第三方 CDN（伪装成 .jpg），**套 gh-proxy 会直接拉不到** —— 实测代价就是
+    所有 csp_* 线路初始化失败、分类全空。所以非 github 地址必须原样用。
+    """
+    if not url:
+        return url
+    if url.startswith(GH):
+        return url
+    if "raw.githubusercontent.com" in url or "github.com/" in url:
+        return GH + url
+    return url
+
+
 def official_jar() -> str:
-    """官方 jar 的地址（`spider` 字段用）——和官方配置一样形如 `地址;md5;xx`，外面套 gh-proxy。
+    """官方 jar 的地址（`spider` 字段用），和官方配置一样形如 `地址;md5;xx`。
 
     官方 55 条线路全都依赖这个 jar（loader dex + assets/*.so + 加密 guard），
-    所以我们**不再用自己的合并 jar 去顶替它**：一条官方线路都不动，
-    我们那条线改用自己的 jar（见 build_line 里的 "jar" 字段）。
+    所以**不替换它**：一条官方线路都不动；我们那条线要用自己的类时，
+    写在它自己的 "jar" 字段里（见 build_line）。
     """
     try:
         with open(UPSTREAM_INFO, encoding="utf-8") as fh:
             info = json.load(fh)
         url, md5 = str(info.get("url", "")), str(info.get("md5", ""))
         if url:
-            spec = url + (";md5;" + md5 if md5 else "")
-            return spec if spec.startswith(GH) else GH + spec      # 官方也套 gh-proxy
+            return gh_wrap(url + (";md5;" + md5 if md5 else ""))
     except (OSError, ValueError):
         pass
-    return GH + "https://raw.githubusercontent.com/youhunwl/TVBox/master/jar/饭太硬.jar"
+    return gh_wrap("https://raw.githubusercontent.com/youhunwl/TVBox/master/jar/饭太硬.jar")
 OUT_MIN = os.path.join(ROOT, "config", "4k_anime_min.json")   # 最小诊断配置
 
 # 玩偶哥哥式静态数据站的地址（public/tvfan/）：WoGG.playerContent 会校验
@@ -231,7 +246,7 @@ def build_line(host: str, kind: str = "cms") -> dict:
             "ext": {
                 "Cloud-drive": "tvfan/Cloud-drive.txt",
                 "data": DATA_BASE + "/anime.json",
-                "data2": DATA_RAW,
+                "data2": gh_wrap(DATA_RAW_RAW),
             },
         }
     if kind == "wogg":
@@ -271,7 +286,7 @@ def build_line(host: str, kind: str = "cms") -> dict:
             "ext": {
                 "cookie": "",
                 "data": DATA_BASE + "/anime.json",
-                "data2": DATA_RAW,
+                "data2": gh_wrap(DATA_RAW_RAW),
             },
         }
     return {
