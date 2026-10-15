@@ -110,7 +110,7 @@ def natural_key(text):
 # 磁盘缓存
 # --------------------------------------------------------------------------- #
 class _Cache:
-    def __init__(self, ttl_list=600, ttl_stoken=1800):
+    def __init__(self, ttl_list=int(os.environ.get("LIST_TTL", "60")), ttl_stoken=1800):
         self.ttl_list = ttl_list
         self.ttl_stoken = ttl_stoken
         os.makedirs(CACHE_DIR, exist_ok=True)
@@ -130,6 +130,14 @@ class _Cache:
         except (OSError, ValueError):
             pass
         return None
+
+    def purge_prefix(self, prefix):
+        import glob as _glob
+        for f in _glob.glob(os.path.join(CACHE_DIR, prefix + "*")):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
 
     def delete(self, key):
         try:
@@ -427,15 +435,29 @@ class Quark:
         if not sub_fid:
             raise QuarkError("创建临时目录失败：%s" % made.get("message"))
 
-        resp = self._request(
-            "/1/clouddrive/share/sharepage/save",
-            {"pr": "ucpro", "fr": "pc", "uc_param_str": ""},
-            {"fid_list": [fid],
-             "fid_token_list": [share_token] if share_token else [],
-             "to_pdir_fid": sub_fid, "pwd_id": pwd_id,
-             "stoken": self.stoken(pwd_id)["stoken"], "pdir_fid": "0",
-             "pdir_save_all": False, "exclude_fids": [], "scene": "link",
-             "create_zip": False})
+        def _do_save(tok):
+            return self._request(
+                "/1/clouddrive/share/sharepage/save",
+                {"pr": "ucpro", "fr": "pc", "uc_param_str": ""},
+                {"fid_list": [fid],
+                 "fid_token_list": [tok] if tok else [],
+                 "to_pdir_fid": sub_fid, "pwd_id": pwd_id,
+                 "stoken": self.stoken(pwd_id)["stoken"], "pdir_fid": "0",
+                 "pdir_save_all": False, "exclude_fids": [], "scene": "link",
+                 "create_zip": False})
+
+        # share_fid_token 会过期，过期时 _request 会直接抛 QuarkError
+        # （403/41020 token校验异常），所以必须在这里捕获后换新令牌重试。
+        try:
+            resp = _do_save(share_token)
+        except QuarkError as exc:
+            if "41020" not in str(exc) and "token校验异常" not in str(exc):
+                raise
+            self.cache.purge_prefix("list_")
+            fresh = self._fresh_token(pwd_id, fid)
+            if not fresh or fresh == share_token:
+                raise
+            resp = _do_save(fresh)
         if resp.get("status") != 200:
             raise QuarkError("转存失败：%s %s" % (resp.get("code"), resp.get("message")))
         task_id = (resp.get("data") or {}).get("task_id")
@@ -463,6 +485,23 @@ class Quark:
             raise QuarkError("转存后未能定位到文件%s"
                              % (("（%s）" % want_name[:40]) if want_name else ""))
         return new_fid, sub_fid
+
+    def _fresh_token(self, pwd_id, fid, limit=3000):
+        """绕过列表缓存，在分享树里按 fid 重新取一个新鲜 share_fid_token"""
+        stack, seen = ["0"], 0
+        while stack and seen < limit:
+            cur = stack.pop()
+            try:
+                files = self.list_all(pwd_id, cur)
+            except QuarkError:
+                continue
+            for f in files:
+                seen += 1
+                if f.get("fid") == fid:
+                    return f.get("share_fid_token") or ""
+                if f.get("dir"):
+                    stack.append(f["fid"])
+        return ""
 
     def _drop_temp(self, sub_fid):
         """删掉一次性子目录（连同里面的文件）"""
@@ -640,13 +679,18 @@ class Quark:
 
     # 解析结果缓存：玩偶哥哥反编译出来的字段就叫 lastQuarkPlayUrl / lastQuarkDownloadUrl，
     # 说明它会把上次解析到的地址留着复用，省掉每次 2 秒多的转存+取链。
-    PLAY_CACHE_TTL = 1800
+    # 0 = 关闭。夸克取流链接绑定会话且会过期，缓存复用会 403
+    # token 校验异常 —— 实测踩过，默认必须关。
+    PLAY_CACHE_TTL = int(os.environ.get("PLAY_CACHE_TTL", "0"))
 
     def _cached_play(self, key):
+        if self.PLAY_CACHE_TTL <= 0:
+            return None
         return self.cache.get("play_" + key, self.PLAY_CACHE_TTL)
 
     def _cache_play(self, key, url):
-        self.cache.set("play_" + key, url)
+        if self.PLAY_CACHE_TTL > 0:
+            self.cache.set("play_" + key, url)
 
     def direct_url(self, pwd_id, fid, share_token="", quality=QUALITY_RAW,
                    file_name="", file_size=0):
