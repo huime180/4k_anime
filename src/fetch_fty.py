@@ -58,14 +58,24 @@ def jar_spec(url: str, filename: str) -> str:
     任何缓存组合都能自洽。
     """
     path = os.path.join(JAR_DIR, filename)
+    stem, ext = os.path.splitext(os.path.basename(filename))
+    base = url.rsplit("/", 1)[0]                       # …/jar
     try:
         with open(path, "rb") as fh:
             md5 = hashlib.md5(fh.read()).hexdigest()
+        return "%s/h/%s.%s%s;md5;%s" % (base, stem, md5, ext, md5)
     except OSError:
-        return url
-    stem, ext = os.path.splitext(os.path.basename(filename))
-    base = url.rsplit("/", 1)[0]                       # …/jar
-    return "%s/h/%s.%s%s;md5;%s" % (base, stem, md5, ext, md5)
+        pass
+    # 本地没构建产物时（比如只在仓库里改配置），退回到 **仓库里最新的那个 jar/h 文件**，
+    # 保证生成的地址一定指向真实存在的文件（以前这里会退回不带 md5 的裸地址 → App 404）
+    import glob
+    cands = sorted(glob.glob(os.path.join(JAR_DIR, "h", "%s.*%s" % (stem, ext))),
+                   key=os.path.getmtime, reverse=True)
+    if cands:
+        name = os.path.basename(cands[0])
+        md5 = name[len(stem) + 1: -len(ext)]
+        return "%s/h/%s;md5;%s" % (base, name, md5)
+    return url
 
 
 def gh_wrap(url: str) -> str:

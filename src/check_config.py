@@ -19,7 +19,22 @@ import sys
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-JAR = os.path.join(ROOT, "jar", "4k_anime_fty_merged.jar")
+
+
+def jar_path() -> str:
+    """要检查的 jar：优先构建产物，其次仓库里最新的 jar/h/<内容md5>.jar。
+
+    （jar/4k_anime_fty_merged.jar 是构建产物、不进仓库；配置引用的是 jar/h/ 里那份。）
+    """
+    plain = os.path.join(ROOT, "jar", "4k_anime_fty_merged.jar")
+    if os.path.exists(plain):
+        return plain
+    cands = sorted(glob.glob(os.path.join(ROOT, "jar", "h", "4k_anime_fty_merged.*.jar")),
+                   key=os.path.getmtime, reverse=True)
+    return cands[0] if cands else plain
+
+
+JAR = jar_path()
 
 # 这些类是**我们**加的，缺了就是硬错误；饭太硬自家的 csp_*Guard 缺了只提示
 # （官方配置里就有 csp_XPathGuard 而官方 jar 里也没有，app 会跳过那一条线）
