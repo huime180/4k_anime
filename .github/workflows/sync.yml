@@ -60,8 +60,11 @@ jobs:
           # 抓不到时脚本会保留现有配置不覆盖，所以这里失败不影响后面
           python3 src/fetch_fty.py --host "${PUBLIC_BASE:-http://192.168.1.102:8787}"
 
-      - name: 生成「玩偶哥哥式」静态站（供 csp_WoGGGuard 抓取）
+      - name: 生成「玩偶哥哥式」静态数据站（供官方 csp_WoGGGuard 抓取）
         run: python3 src/build_site.py
+
+      - name: 数据站契约自检（选择器必须和 WoGG 对得上）
+        run: python3 src/check_site.py
 
       - name: 生成 TVBox 配置与静态页面
         env:

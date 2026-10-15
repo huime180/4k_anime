@@ -84,6 +84,10 @@ def official_jar() -> str:
     return GH + "https://raw.githubusercontent.com/youhunwl/TVBox/master/jar/饭太硬.jar"
 OUT_MIN = os.path.join(ROOT, "config", "4k_anime_min.json")   # 最小诊断配置
 
+# 玩偶哥哥式静态数据站的地址（public/tvfan/）：WoGG.playerContent 会校验
+# siteUrl 里必须含 "wogg" 或 "tvfan"，所以路径里保留了 tvfan
+SITE_URL = (os.environ.get("SITE_URL") or (DATA_BASE + "/tvfan/"))
+
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
@@ -230,6 +234,26 @@ def build_line(host: str, kind: str = "cms") -> dict:
                 "data2": DATA_RAW,
             },
         }
+    if kind == "wogg":
+        # 配置 A：**一行自己的代码都不用** —— 用官方 csp_WoGGGuard，siteUrl 指到我们的静态数据站。
+        # 它按固定选择器抓列表/详情（见 src/build_site.py 的契约注释），
+        # 播放链接就写在详情页 div.module-row-info > a 的 data-clipboard-text 里，
+        # 取流/登录依旧由 jar 里的网盘引擎负责。
+        return {
+            "key": "4k_anime",
+            "name": "🎬4K动漫┃夸克",
+            "type": 3,
+            "api": "csp_WoGGGuard",
+            "timeout": 30,
+            "searchable": 1,
+            "quickSearch": 1,
+            "changeable": 0,
+            "ext": {
+                "siteUrl": SITE_URL,
+                "from": "4k|auto",
+                "Cloud-drive": "tvfan/Cloud-drive.txt",
+            },
+        }
     if kind == "own":
         # 配置 B：解析用我们自己那套（csp_Quark4K）。cookie 可以手填，也可以留空——
         # 留空时会先反射读饭太硬那套的登录态（「我的云盘」扫码后就有），
@@ -276,12 +300,12 @@ def merge(cfg: dict, host: str, kind: str = "cms") -> dict:
     # 所有官方线路会一起消失（用户遇到的「线路都识别不到」）。我们那条线用自己的 jar，
     # 写在站点自己的 "jar" 字段里（TVBox/影视仓 的站点级 jar）。
     cfg["spider"] = official_jar()
-    if kind in ("spider", "own"):
+    if kind in ("spider", "own", "wogg"):
         cfg["_说明"] = ("饭太硬官方配置（自动解析） + 4k_anime 线路"
                         "（插在「我的云盘」之后，自带 jar 字段）")
-        cfg["_4k动漫"] = ("目录来自 " + DATA_BASE + "/anime.json（站点不含解析）；"
-                          "详情/播放直接调用饭太硬原生的夸克解析（夸克登录见「我的云盘」）。"
-                          "本条目自带 jar 字段，spider 保持官方 jar 不动。"
+        cfg["_4k动漫"] = ("数据站 " + SITE_URL + "（纯静态，公开/tvfan/，站点里没有任何解析）；"
+                          "线路直接用官方 csp_WoGGGuard 抓它，spider 保持官方 jar 不动，"
+                          "条目也不需要自带 jar。夸克登录见「我的云盘」。"
                           "本文件由 src/fetch_fty.py 自动生成。")
     else:
         cfg["_说明"] = ("饭太硬官方配置（自动解析） + 4k_anime 线路"
@@ -318,7 +342,7 @@ def main() -> int:
     before = len(cfg.get("sites") or [])
 
     outs = []
-    for kind, path in (("cms", args.out), ("spider", args.out_spider), ("own", args.out_own)):
+    for kind, path in (("cms", args.out), ("wogg", args.out_spider), ("own", args.out_own)):
         cfg_v = copy.deepcopy(cfg)
         merge(cfg_v, args.host, kind)
         os.makedirs(os.path.dirname(path), exist_ok=True)

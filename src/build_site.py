@@ -1,23 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-4k_anime · 生成「玩偶哥哥式」静态站
-==================================
-目标：让饭太硬 jar 里的 csp_WoGGGuard 能直接抓我们这个站。
+"""生成「玩偶哥哥数据站」式静态站（纯 HTML，站点里没有任何解析）。
 
-依据（来自公开的玩偶哥哥抓取配置 json/玩偶哥哥.json）：
-    数组   : module-item-pic / module-item-cover
-    链接   : href="..."
-    副标题 : module-item-text
-    分类url: /index.php/vodshow/{cateId}-{area}-{by}-{class}-{lang}-{letter}---{catePg}---{year}.html
-    搜索url: /index.php/vodsearch/-------------.html?wd={wd}
-    分类   : 电影$1#剧集$2#综艺$4#动漫$3#短剧$6#音乐$5
+产出在 public/tvfan/ 下（URL 里带 tvfan 是必须的：饭太硬的 WoGG.playerContent
+里有一道 `siteUrl.contains("wogg") || siteUrl.contains("tvfan")` 的校验）。
 
-因为 WoGG 详情页的抽取规则是字符串加密的、无法直接读，所以详情页把夸克分享
-链接放在**多个可能被识别的位置**（a[href] / data-* / 可见文本），提高命中率。
+契约全部来自反编译 csp_WoGGGuard（WoGG.java）里解密出来的选择器，一个字都不改：
 
-用法:
-    python3 src/build_site.py            # 输出到 public/site/
+  首页    {site}                      必须含「玩偶」字样；卡片在 div.module-lines-list 里
+  分类    {site}vodshow/{cid}-----------.html          （分页 {cid}-------{pg}---.html）
+  详情    {site}voddetail/{id}.html
+  搜索    {site}vodsearch/-------------.html?wd={kw}   （带 query，静态站照发同一页；
+                                                       WoGG.searchContent 自己会用标题做 contains 过滤）
+
+  列表卡片: div.module-item
+            div.module-item-pic>a   -> href(含 /voddetail/N.html)、title
+            img.lazyloaded          -> data-src
+            div.module-item-caption span -> vod_year
+            div.module-item-text    -> vod_remarks
+  详情:     div.video-cover div.module-item-pic img.lazyload -> alt / data-src
+            div.video-info-items + span.video-info-itemtitle + div.video-info-item
+            p.sqjj_a、div.video-info-aux a、div.video-info-aux > div.tag-link a
+            ★ div.module-row-info > a 的 data-clipboard-text = 网盘链接
+              （用 https://pan.quark.cn/s/<pwd_id>，Pan.isQuark 认 pan.quark.cn；
+                要精确到某个文件就写 .../s/<pwd>#/list/share/<fid>）
+  搜索卡片: div.module-search-item
+            div.module-item-pic img
+            div.video-info-header  h3  a           -> 标题（它按这个 contains 关键词过滤）
+            div.video-info-header a.video-serial   -> 备注
 """
 
 from __future__ import annotations
@@ -25,190 +35,182 @@ from __future__ import annotations
 import html
 import json
 import os
-import re
-import sys
-import urllib.parse
+import shutil
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ANIME = os.path.join(ROOT, "data", "anime.json")
-META = os.path.join(ROOT, "data", "meta.json")
-OUT = os.path.join(ROOT, "public", "site")
+DATA_DIR = os.path.join(ROOT, "data")
+PUBLIC_DIR = os.path.join(ROOT, "public")
+SITE_DIR = os.path.join(PUBLIC_DIR, "tvfan")      # 路径里带 tvfan（见文件头说明）
+ANIME = os.path.join(DATA_DIR, "anime.json")
+META = os.path.join(DATA_DIR, "meta.json")
+PER_PAGE = 24
+BASE_PREFIX = "/4k_anime/tvfan"                   # GitHub Pages 上的路径前缀（生成绝对链接用）
 
-# 饭太硬那边的分类编号（对应它的 分类url 模板）
-CATE_IDS = {"电影": 1, "剧集": 2, "动漫": 3, "综艺": 4, "音乐": 5, "短剧": 6}
-PAGE_SIZE = 24
+CSS = """body{margin:0;background:#0f1017;color:#e5e5ee;font:14px/1.6 system-ui,-apple-system,"PingFang SC",sans-serif}
+header{padding:14px 18px;border-bottom:1px solid #262a38;color:#9fd0ff}
+a{color:inherit;text-decoration:none}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:14px;padding:16px 18px}
+.module-item{background:#191b26;border:1px solid #262a38;border-radius:10px;overflow:hidden}
+.module-item-pic img,.module-item-pic>a img{width:100%;aspect-ratio:2/3;object-fit:cover;display:block;background:#232636}
+.module-item-text,.module-item-caption{padding:2px 8px;color:#8b90a8;font-size:12px}
+.module-item-title{padding:6px 8px 2px;font-size:12.5px}
+.video-cover img{width:180px;border-radius:10px}
+.video-info-items{padding:0 18px;color:#b9bed0;font-size:13px}
+.video-info-itemtitle{color:#8b90a8;margin-right:6px}
+p.sqjj_a{padding:0 18px;color:#b9bed0}
+.module-row-info{padding:14px 18px}
+.module-row-info a{display:inline-block;margin:4px 8px 0 0;padding:6px 12px;border:1px solid #2f3446;border-radius:8px;background:#191b26;color:#9fd0ff}
+.module-search-item{display:flex;gap:12px;padding:12px 18px;border-bottom:1px solid #1e2130}
+.module-search-item .module-item-pic img{width:96px;border-radius:8px}
+.video-info-header h3{margin:0 0 6px;font-size:14px}
+.video-serial{color:#8b90a8;font-size:12px}
+"""
 
 
-def esc(s):
+def esc(s) -> str:
     return html.escape(str(s or ""), quote=True)
 
 
-def load_meta():
+def rel(url: str) -> str:
+    """封面地址：远程图直接用，占位图落到 GitHub Pages 的 cover/ 下。"""
+    if not url:
+        return ""
+    if url.startswith("http"):
+        return url
+    if url.startswith("/"):
+        return url
+    return "/4k_anime/" + url.lstrip("./")
+
+
+def pic_of(item, meta) -> str:
+    key = "".join(ch for ch in str(item.get("name", "")).lower() if ch.isalnum())
+    info = (meta or {}).get(key) or {}
+    return rel(info.get("image") or item.get("vod_pic") or ("cover/%s.png" % item.get("id", "")))
+
+
+def nid_of(item) -> str:
+    """WoGG 里提取 id 的正则是 /voddetail/(\\d+)\\.html —— 只能是数字！
+
+    我们 anime.json 里的 id 是十六进制串，所以站点上用「序号」当 id（详情页本身没变）。
+    """
+    return str(item.get("_nid", ""))
+
+
+def card(item, meta) -> str:
+    """列表卡片：严格按 WoGG 的选择器来。"""
+    return (
+        '<div class="module-item">'
+        '<div class="module-item-pic">'
+        '<a href="%s/voddetail/%s.html" title="%s"><img class="lazyloaded" data-src="%s" alt="%s"></a>'
+        '</div>'
+        '<div class="module-item-title">%s</div>'
+        '<div class="module-item-caption"><span>%s</span></div>'
+        '<div class="module-item-text">%s</div>'
+        '</div>'
+    ) % (BASE_PREFIX, esc(nid_of(item)), esc(item.get("name")), esc(pic_of(item, meta)),
+         esc(item.get("name")), esc(item.get("name")),
+         esc(item.get("year", "")), esc(remarks(item)))
+
+
+def remarks(item) -> str:
+    return "%s · %s" % (item.get("resolution", ""), item.get("drive_name", ""))
+
+
+def page(title: str, body: str) -> str:
+    return ('<!doctype html><html lang="zh-cn"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>%s</title><link rel="stylesheet" href="%s/style.css"></head><body>'
+            '<header>玩偶哥哥数据站（4K动漫镜像）｜ %s</header>%s</body></html>'
+            % (esc(title), BASE_PREFIX, esc(title), body))
+
+
+def write(path: str, text: str):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def main() -> int:
+    anime = json.load(open(ANIME, encoding="utf-8"))
+    meta = {}
     try:
-        with open(META, encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return {}
-
-
-def norm(s):
-    s = str(s or "")
-    s = re.sub(r"\[[^\]]*\]", "", s)
-    s = re.sub(r"^\s*\d+[.\-_ ]*", "", s)
-    s = re.sub(r"(?i)\bs\d{1,2}\b", "", s)
-    return re.sub(r"[\s\-_·:：,，。.、]+", "", s).lower()
-
-
-PAGE_HEAD = """<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title}</title></head><body>
-<div class="page">
-<div class="poster-grid">
-"""
-
-PAGE_FOOT = """</div></div>
-<div class="module-page">
-{pager}
-</div>
-</body></html>
-"""
-
-# 【重要】样式必须走外链：内联 <style> 里的 .module-item-text{} 会被抓取规则
-# 当成「副标题」抽出来（实测抽到空串），污染条目解析。
-PAGE_CSS = '<link rel="stylesheet" href="/style.css">\n'
-
-STYLE_CSS = """body{background:#12131a;color:#e8e8ef;font:14px/1.5 system-ui,sans-serif;margin:0;padding:12px}
-a{color:#9fd0ff;text-decoration:none}
-.poster-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:14px}
-.poster-cell{background:#1b1d29;border-radius:10px;overflow:hidden}
-.poster-cell img{width:100%;aspect-ratio:2/3;object-fit:cover;display:block}
-.poster-meta{padding:6px 8px;font-size:12px;color:#8b90a8}
-"""
-
-
-def item_html(it, meta):
-    pic = (meta.get(norm(it["name"])) or {}).get("image") or "./cover.png"
-    detail = "index.php/voddetail/%s.html" % it["id"]
-    return (
-        '<div class="module-item-pic module-item-cover">\n'
-        '  <a class="module-item-cover" href="%s" title="%s">\n'
-        '    <img class="lazyload" data-src="%s" src="%s" alt="%s">\n'
-        '    <div class="module-item-text">%s</div>\n'
-        '  </a>\n'
-        '</div>\n' % (esc(detail), esc(it["name"]), esc(pic), esc(pic),
-                      esc(it["name"]),
-                      esc("%s · %s" % (it.get("resolution", ""), it.get("drive_name", ""))))
-    )
-
-
-def write(path, body):
-    full = os.path.join(OUT, path)
-    os.makedirs(os.path.dirname(full), exist_ok=True)
-    with open(full, "w", encoding="utf-8") as fh:
-        fh.write(body)
-
-
-def detail_html(it, eps, meta):
-    """详情页：把夸克分享链接撒在多个可能被识别的位置"""
-    share = it.get("share_url") or ""
-    pic = (meta.get(norm(it["name"])) or {}).get("image") or "/cover.png"
-    play_lines = []
-    for i, ep in enumerate(eps or [], 1):
-        nm = esc(ep.get("file_name") or ("第%02d集" % i))
-        # 每个剧集都带上分享链接（饭太硬的 Cloud_quark 认 /s/xxx）
-        play_lines.append(
-            '<li class="module-play-list-item">'
-            '<a href="%s" data-url="%s" data-play="%s" title="%s">%s</a></li>'
-            % (esc(share), esc(share), esc(share), nm, nm))
-    if not play_lines:
-        play_lines.append(
-            '<li class="module-play-list-item">'
-            '<a href="%s" data-url="%s" data-play="%s">在线播放</a></li>'
-            % (esc(share), esc(share), esc(share)))
-    return (
-        PAGE_HEAD.format(title=esc(it["name"]))
-        + '<div class="module-info">\n'
-        + '  <img class="module-item-pic" src="%s" alt="%s">\n' % (esc(pic), esc(it["name"]))
-        + '  <div class="module-info-item"><span>片名</span>%s</div>\n' % esc(it["name"])
-        + '  <div class="module-info-item"><span>画质</span>%s</div>\n' % esc(it.get("resolution", ""))
-        + '  <div class="module-info-item"><span>分类</span>%s</div>\n'
-          % esc("%s / %s" % (it.get("category", ""), it.get("group", "")))
-        + '</div>\n'
-        + '<div class="module-play-list"><ul>\n' + "\n".join(play_lines) + '\n</ul></div>\n'
-        + '<!-- 供抓取：%s -->\n' % esc(share)
-        + '<div class="module-play-url" data-url="%s">%s</div>\n' % (esc(share), esc(share))
-        + PAGE_FOOT.format(pager="")
-    )
-
-
-def main():
-    with open(ANIME, encoding="utf-8") as fh:
-        data = json.load(fh)
-    meta = load_meta()
-    items = data.get("items") or []
-    if not items:
-        print("[site] anime.json 里没有条目，先跑 sync_table.py", file=sys.stderr)
-        return 1
-
-    os.makedirs(OUT, exist_ok=True)
-    for d in ("index.php/vodshow", "index.php/voddetail", "index.php/vodsearch"):
-        os.makedirs(os.path.join(OUT, d), exist_ok=True)
-
-    # 顶层分类 -> 条目
-    by_top = {}
+        meta = json.load(open(META, encoding="utf-8"))
+    except OSError:
+        pass
+    items = anime.get("items", [])
+    for i, it in enumerate(items, 1):
+        it["_nid"] = i          # 站点上的数字 id（见 nid_of）
+    classes = anime.get("classes", [])
+    by_top, by_own = {}, {}
     for it in items:
-        by_top.setdefault(it.get("category") or "其他", []).append(it)
+        by_top.setdefault(str(it.get("type_id_top")), []).append(it)
+        by_own.setdefault(str(it.get("type_id")), []).append(it)
 
-    made_cat = 0
-    # 只有「动漫」有明确编号；其余按出现顺序借用空闲编号
-    cate_map = {"动漫": 3}
-    used = {3}
-    for name in by_top:
-        if name in cate_map:
-            continue
-        for cid in (1, 2, 4, 5, 6, 7, 8, 9):
-            if cid not in used:
-                cate_map[name] = cid
-                used.add(cid)
-                break
+    shutil.rmtree(SITE_DIR, ignore_errors=True)
+    os.makedirs(SITE_DIR, exist_ok=True)
 
-    for name, group in by_top.items():
-        cid = cate_map.get(name, 3)
-        pages = (len(group) + PAGE_SIZE - 1) // PAGE_SIZE
-        for pg in range(1, pages + 1):
-            chunk = group[(pg - 1) * PAGE_SIZE: pg * PAGE_SIZE]
-            pager = " ".join(
-                '<a href="index.php/vodshow/%d----------%d---.html">%d</a>' % (cid, p, p)
-                for p in range(1, pages + 1))
-            body = (PAGE_HEAD.format(title=esc(name))
-                    + PAGE_CSS
-                    + "".join(item_html(it, meta) for it in chunk)
-                    + PAGE_FOOT.format(pager=pager))
-            write("index.php/vodshow/%d----------%d---.html" % (cid, pg), body)
-            made_cat += 1
+    # 首页：必须含「玩偶」，卡片放在 div.module-lines-list 里
+    pick = items[:PER_PAGE]
+    write(os.path.join(SITE_DIR, "index.html"),
+          page("玩偶哥哥共享站 · 4K动漫",
+               '<div class="module-lines-list"><div class="grid">%s</div></div>'
+               % "".join(card(i, meta) for i in pick)))
+    write(os.path.join(SITE_DIR, "style.css"), CSS)
 
-    # 详情页（剧集列表从 data/cache 里取不到就留空，播放链接仍带上）
-    made_det = 0
+    # 分类页：两种横线形态都生成（分页参数可能为空、也可能是 1..N）
+    for c in classes:
+        cid = str(c.get("type_id"))
+        rows = by_own.get(cid) or by_top.get(cid) or []
+        pages = max(1, (len(rows) + PER_PAGE - 1) // PER_PAGE)
+        for p in range(1, pages + 1):
+            chunk = rows[(p - 1) * PER_PAGE: p * PER_PAGE]
+            body = '<div class="module-lines-list"><div class="grid">%s</div></div>' % "".join(card(i, meta) for i in chunk)
+            text = page(c.get("type_name", cid), body)
+            write(os.path.join(SITE_DIR, "vodshow", "%s-------%d---.html" % (cid, p)), text)
+            if p == 1:
+                # 分页参数为空时 jar 请求的是 11 个横线那一版
+                write(os.path.join(SITE_DIR, "vodshow", "%s-----------.html" % cid), text)
+
+    # 详情页：播放链接写在 div.module-row-info > a 的 data-clipboard-text 里
     for it in items:
-        write("index.php/voddetail/%s.html" % it["id"], detail_html(it, [], meta))
-        made_det += 1
+        share = "https://pan.quark.cn/s/%s" % it.get("pwd_id", "")
+        info = ""
+        for label, value in (("备注：", remarks(it)), ("年代：", it.get("year", "")),
+                             ("类型：", it.get("group") or it.get("category", "")),
+                             ("导演：", ""), ("主演：", "")):
+            info += ('<div class="video-info-item"><span class="video-info-itemtitle">%s</span>%s</div>'
+                     % (esc(label), esc(value)))
+        aux = ('<div class="video-info-aux"><div class="tag-link"><a href="#">%s</a></div>'
+               '<a class="tag-link" href="#">%s</a></div>'
+               % (esc(it.get("category", "")), esc(it.get("group", ""))))
+        body = (
+            '<div class="video-cover"><div class="module-item-pic">'
+            '<img class="lazyload" alt="%s" data-src="%s"></div></div>'
+            '<h1>%s</h1>'
+            '<div class="video-info-items">%s</div>%s'
+            '<p class="sqjj_a">%s</p>'
+            '<div class="module-row-info">'
+            '<a href="#" data-clipboard-text="%s">复制夸克链接</a>'
+            '</div>'
+        ) % (esc(it.get("name")), esc(pic_of(it, meta)), esc(it.get("name")), info, aux,
+             esc(it.get("summary", "")), esc(share))
+        write(os.path.join(SITE_DIR, "voddetail", "%s.html" % nid_of(it)), page(it.get("name", ""), body))
 
-    # 搜索页（静态兜底：列出全部，让搜索规则至少有东西可抓）
-    allbody = (PAGE_HEAD.format(title="全部") + PAGE_CSS
-               + "".join(item_html(it, meta) for it in items[:300])
-               + PAGE_FOOT.format(pager=""))
-    write("index.php/vodsearch/-------------.html", allbody)
-    write("index.html", (PAGE_HEAD.format(title="4K动漫") + PAGE_CSS
-                         + "".join(item_html(it, meta) for it in items[:120])
-                         + PAGE_FOOT.format(pager="")))
+    # 搜索页：静态站只能给同一页，WoGG.searchContent 会自己按标题 contains 过滤
+    srows = "".join(
+        '<div class="module-search-item"><div class="module-item-pic">'
+        '<img data-src="%s" alt="%s"></div>'
+        '<div class="video-info-header"><h3><a href="%s/voddetail/%s.html">%s</a></h3>'
+        '<a class="video-serial">%s</a></div></div>'
+        % (esc(pic_of(i, meta)), esc(i.get("name")), BASE_PREFIX, esc(nid_of(i)),
+           esc(i.get("name")), esc(remarks(i)))
+        for i in items)
+    write(os.path.join(SITE_DIR, "vodsearch", "-------------.html"),
+          page("搜索", '<div class="module-lines-list">%s</div>' % srows))
 
-    write("style.css", STYLE_CSS)
-    print("[site] 分类页 %d 个（%d 个分类）" % (made_cat, len(by_top)))
-    print("[site] 详情页 %d 个" % made_det)
-    print("[site] 搜索页 + 首页")
-    print("[site] 分类编号: %s" % cate_map)
-    print("[site] 输出: %s" % OUT)
+    n = sum(len(fs) for _, _, fs in os.walk(SITE_DIR))
+    print("✅ 玩偶哥哥式静态站 -> %s（%d 个文件，%d 条）" % (SITE_DIR, n, len(items)))
+    print("   站点地址示例： %s/  （ext.siteUrl 就填这个，路径里必须带 tvfan）" % BASE_PREFIX)
     return 0
 
 
