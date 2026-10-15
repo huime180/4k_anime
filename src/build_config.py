@@ -101,6 +101,47 @@ def _make_placeholder_covers():
     return made
 
 
+def _inject_covers():
+    """把封面 URL 写进 anime.json 的每个 item（vod_pic）
+
+    优先 Bangumi 封面；没有的用 GitHub Pages 上的占位封面。
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from quark import normalize_name
+
+    anime_path = os.path.join(DATA_DIR, "anime.json")
+    meta_path = os.path.join(DATA_DIR, "meta.json")
+    if not os.path.exists(anime_path):
+        return 0
+    with open(anime_path, encoding="utf-8") as fh:
+        anime = json.load(fh)
+    meta = {}
+    if os.path.exists(meta_path):
+        with open(meta_path, encoding="utf-8") as fh:
+            meta = json.load(fh)
+
+    pages = os.environ.get("PAGES_BASE",
+                           "https://huime180.github.io/4k_anime").rstrip("/")
+    hit = 0
+    for item in anime.get("items", []):
+        info = meta.get(normalize_name(item["name"])) or {}
+        pic = info.get("image") or ""
+        if not pic:
+            pic = "%s/cover/%s.png" % (pages, item["id"])
+        else:
+            hit += 1
+        item["vod_pic"] = pic
+    anime["_covers"] = {"bangumi": hit, "total": len(anime.get("items", []))}
+
+    with open(os.path.join(PUBLIC_DIR, "anime.json"), "w", encoding="utf-8") as fh:
+        json.dump(anime, fh, ensure_ascii=False)
+    # 同步回 data/，让服务端与静态页看到同一份
+    with open(anime_path, "w", encoding="utf-8") as fh:
+        json.dump(anime, fh, ensure_ascii=False)
+    print("[build] 封面已写入 anime.json：Bangumi %d / %d" % (hit, len(anime.get("items", []))))
+    return hit
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default=os.environ.get("PUBLIC_BASE", "http://127.0.0.1:8787"),
@@ -113,8 +154,12 @@ def main():
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(config, fh, ensure_ascii=False, indent=2)
 
-    # 静态数据一并拷到 public/，供 GitHub Pages 浏览
-    for name in ("anime.json", "meta.json"):
+    # 静态数据：anime.json 里补上 vod_pic
+    # 原因：spider 读的是这份静态数据，而封面原本只在服务端运行时由 meta.json 算出，
+    # 静态文件里没有 -> 客户端就没图。这里把封面 URL 直接写进每个 item。
+    _inject_covers()
+
+    for name in ("meta.json",):
         src = os.path.join(DATA_DIR, name)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(PUBLIC_DIR, name))
