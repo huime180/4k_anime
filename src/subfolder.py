@@ -35,6 +35,9 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(ROOT, "data")
+PUBLIC_DIR = os.path.join(ROOT, "public")
+TREE_DIR = os.path.join(PUBLIC_DIR, "tree")     # 目录树（静态数据）
+SHARE_DIR = os.path.join(PUBLIC_DIR, "share")   # 每个合集的「目录 + 正片清单」（给播放用）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from names import normalize_name  # noqa: E402
@@ -101,6 +104,53 @@ def listdir(pwd_id, stoken, pdir_fid="0"):
         if len(got) < 50:
             break
     return out
+
+
+# 这层有视频/压缩包 -> 是正片目录；一个都没有 -> 是合集，继续往里
+MEDIA_EXT = (".mp4", ".mkv", ".avi", ".ts", ".m2ts", ".rmvb", ".flv", ".wmv", ".mov",
+             ".iso", ".mpg", ".mpeg", ".webm", ".zip", ".rar", ".7z", ".tar", ".gz")
+
+
+def _is_media(name):
+    return str(name or "").lower().endswith(MEDIA_EXT)
+
+
+def collect_share(pwd_id, stoken, max_depth=8):
+    """一次遍历同时收：目录树 + 每个目录里的正片
+
+    返回 (dirs, files)：
+      dirs  = {fid: {"n": 名字, "p": 上级 fid}}
+      files = [{"fid","n","s","tk","p","t","c","d"}]  —— 就是夸克列目录给的
+              fid / 文件名 / 大小 / share_fid_token / pdir_fid，外加所在目录名 d
+    （共享链接下不需要登录：令牌 + 列目录都是匿名的）
+    """
+    dirs = {"0": {"n": "分享根目录", "p": ""}}
+    files = []
+
+    def walk(fid, depth, dir_name):
+        if depth > max_depth:
+            return
+        try:
+            entries = listdir(pwd_id, stoken, fid)
+        except Exception:  # noqa: BLE001
+            return
+        dirs_here = [e for e in entries if e.get("dir")]
+        if not (depth > 1 and any(_is_media(e.get("file_name")) for e in entries)):
+            for entry in dirs_here:            # 没有正片 -> 这层是合集，继续往里
+                child = entry.get("fid") or ""
+                name = entry.get("file_name") or ""
+                dirs[child] = {"n": name, "p": fid}
+                walk(child, depth + 1, name)
+        for entry in entries:
+            if entry.get("dir") or not _is_media(entry.get("file_name")):
+                continue
+            files.append({"fid": entry.get("fid") or "", "n": entry.get("file_name") or "",
+                          "s": entry.get("size") or 0, "tk": entry.get("share_fid_token") or "",
+                          "p": entry.get("pdir_fid") or fid, "t": entry.get("format_type") or "",
+                          "c": entry.get("created_at") or 0, "d": dir_name})
+
+    walk("0", 1, "")
+    return dirs, files
 
 
 def second_level(pwd_id):
@@ -223,7 +273,31 @@ def main():
             hit += len(items)
             continue
         try:
-            folders = second_level(pwd)
+            tk = (_json(TOKEN_API, {"pwd_id": pwd, "passcode": ""}) or {}).get("data") or {}
+            stoken = tk.get("stoken") or ""
+            dirs_all, files = collect_share(pwd, stoken)
+            # 根下只套一层「2026年10月(秋季档)番剧合集」的话把它拍平（少一层）
+            tops = [f for f, v in dirs_all.items() if v.get("p") == "0" and f != "0"]
+            if len(tops) == 1:
+                wrapper = tops[0]
+                for info in dirs_all.values():
+                    if info.get("p") == wrapper:
+                        info["p"] = "0"
+                dirs_all.pop(wrapper, None)
+            dirs_all.setdefault("0", {"n": "分享根目录", "p": ""})
+            folders = [(f, v["n"]) for f, v in dirs_all.items() if v.get("p") == "0" and f != "0"]
+            name2fid = {}
+            for f, v in dirs_all.items():
+                name2fid.setdefault(v["n"], f)
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            os.makedirs(TREE_DIR, exist_ok=True)
+            os.makedirs(SHARE_DIR, exist_ok=True)
+            with open(os.path.join(TREE_DIR, pwd + ".json"), "w", encoding="utf-8") as fh:
+                json.dump({"pwd": pwd, "synced_at": stamp, "dirs": dirs_all}, fh, ensure_ascii=False)
+            with open(os.path.join(SHARE_DIR, pwd + ".json"), "w", encoding="utf-8") as fh:
+                json.dump({"pwd": pwd, "stoken": stoken, "author": tk.get("author") or "",
+                           "title": tk.get("title") or "", "synced_at": stamp,
+                           "dirs": dirs_all, "files": files}, fh, ensure_ascii=False)
         except Exception as exc:  # noqa: BLE001
             failed += len(items)
             print("  ! %s 列目录失败：%s（保留原链接）" % (pwd, exc))
@@ -234,7 +308,9 @@ def main():
             fid, name = pick(item, entry, folders)
             if fid:
                 item["share_url"] = SHARE_URL % (pwd, fid)
-                item["subfolder"] = name          # 只作记录，spider 不看
+                item["subfolder"] = name
+                if name2fid.get(name):
+                    item["subfolder_fid"] = name2fid[name]
                 hit += 1
             else:
                 item["share_url"] = "https://pan.quark.cn/s/" + pwd

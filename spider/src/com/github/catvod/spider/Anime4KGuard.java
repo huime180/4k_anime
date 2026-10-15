@@ -50,7 +50,10 @@ public class Anime4KGuard extends Spider {
     private String realReason = "未尝试";   // 饭太硬原生那条失败的原因（写进详情，方便排查）
     private String dataUrl = "";
     private boolean subfolderOnly = true;  // 合集分享只留本条目对应的那个目录（ext.subfolder=false 可关）
+    private boolean ownPlay = true;        // 合集条目用「本地清单 + 饭太硬取流」（它自己解析整季会 OOM）
     String filterNote = "";                // 筛选结果，写进简介，在 App 里看得见
+    private static String sharePwd = null, shareBody = null;
+    private static long shareAt = 0;
     private J theirsMeta = null;         // 饭太硬那条详情的第一个条目（字段回填用）
 
     private static String dataCache = null;
@@ -73,6 +76,9 @@ public class Anime4KGuard extends Spider {
                 if (o.get("subfolder") != null && "false".equalsIgnoreCase(o.str("subfolder"))) {
                     subfolderOnly = false;
                 }
+                if (o.get("ownPlay") != null && "false".equalsIgnoreCase(o.str("ownPlay"))) {
+                    ownPlay = false;
+                }
             } else if (!extRaw.isEmpty()) {
                 dataUrl = extRaw;
             }
@@ -86,7 +92,7 @@ public class Anime4KGuard extends Spider {
     public void init(Context context) { }
 
     /** 目录数据（静态 anime.json），带 10 分钟内存缓存 */
-    private J data() throws Exception {
+    J data() throws Exception {
         long now = System.currentTimeMillis();
         if (dataCache != null && now - dataCacheAt < 600000) return J.parse(dataCache);
         java.util.List<String> urls = new java.util.ArrayList<String>();
@@ -213,6 +219,11 @@ public class Anime4KGuard extends Spider {
                         "该条目不是夸克分享（网盘：" + item.str("drive_name") + "），这条线只吃夸克分享");
             }
 
+            // 合集条目：直接用构建时列好的清单出剧集（不叫它解析整季 —— 大合集它会 OOM），
+            // 播放时再把这一条文件交给它自己的取流接口
+            String[] mine = ownDetail(item);
+            if (mine != null) return detailJson(item, id, mine);
+
             // 链接优先用条目里的 share_url：合集条目在同步时已经改指到「二级目录」
             // （https://pan.quark.cn/s/<pwd>#/list/share/<fid>），这样只会列这一部番
             String shareUrl = item.str("share_url");
@@ -300,6 +311,123 @@ public class Anime4KGuard extends Spider {
             filterNote = "合集子目录：筛选出错(" + t + ")，按全部集数列出";
             return theirs;
         }
+    }
+
+    /** 数据站里的其它静态文件地址（和 anime.json 同目录，换个文件名） */
+    java.util.List<String> dataUrls(String file) {
+        java.util.List<String> bases = new java.util.ArrayList<String>();
+        if (dataUrl != null && !dataUrl.isEmpty()) bases.add(dataUrl);
+        bases.addAll(extraUrls);
+        java.util.List<String> out = new java.util.ArrayList<String>();
+        for (String u : bases) {
+            String t = u.replace("anime.json", file);
+            if (!out.contains(t)) out.add(t);
+        }
+        return out;
+    }
+
+    /** 某个合集的清单（构建时列的目录 + 正片，见 src/subfolder.py），10 分钟内存缓存 */
+    J share(String pwd) throws Exception {
+        long now = System.currentTimeMillis();
+        if (pwd.equals(sharePwd) && shareBody != null && now - shareAt < 600000) return J.parse(shareBody);
+        Exception last = null;
+        for (String url : dataUrls("share/" + pwd + ".json")) {
+            try {
+                String body = http("GET", url, null, null, null);
+                if (body != null && body.contains("\"files\"")) {
+                    sharePwd = pwd;
+                    shareBody = body;
+                    shareAt = now;
+                    return J.parse(body);
+                }
+                last = new Exception("不是清单: " + url);
+            } catch (Exception e) {
+                last = e;
+            }
+        }
+        throw last == null ? new Exception("拿不到清单") : last;
+    }
+
+    /**
+     * 合集条目：用本地清单直接出剧集（不调用它解析整季）
+     *
+     * 返回 {线路名, 播放列表}；不是合集 / 没有清单 / 清单里没这一部 -> null（回退老路）
+     */
+    String[] ownDetail(J item) {
+        try {
+            if (!ownPlay) return null;
+            String pwd = item.str("pwd_id");
+            long count = 1;
+            try { count = Long.parseLong(item.str("share_count")); } catch (Throwable ignore) { }
+            if (pwd.isEmpty() || count <= 1) return null;         // 不是合集
+            String folder = item.str("subfolder");
+            String fid = item.str("subfolder_fid");
+            if (fid.isEmpty() && folder.isEmpty()) return null;   // 没认出目录，回退老路
+            J share = share(pwd);
+            J dirs = share.node("dirs");
+            if (dirs == null) return null;
+
+            // 这个目录 + 它下面所有层（同一系列的分季/Part 一起列，不再分级）
+            java.util.Set<String> want = new java.util.HashSet<String>();
+            if (!fid.isEmpty()) {
+                java.util.List<String> stack = new ArrayList<String>();
+                stack.add(fid);
+                while (!stack.isEmpty()) {
+                    String cur = stack.remove(0);
+                    J node = dirs.node(cur);
+                    if (node != null) want.add(norm(node.str("n")));
+                    for (String k : dirs.keys()) {
+                        J c = dirs.node(k);
+                        if (c != null && cur.equals(c.str("p"))) stack.add(k);
+                    }
+                }
+            }
+            if (want.isEmpty() && !folder.isEmpty()) want.add(norm(folder));
+
+            String base = norm(folder);
+            List<J> files = share.arr("files");
+            StringBuilder url = new StringBuilder();
+            int n = 0;
+            for (int i = 0; i < files.size(); i++) {
+                J f = files.get(i);
+                String where = norm(f.str("d"));
+                if (!want.contains(where)) continue;
+                String label = f.str("n");
+                if (!where.equals(base)) label = f.str("d") + " " + label;   // 分季目录的加个前缀
+                if (n++ > 0) url.append("#");
+                url.append(label).append("$4k:tx:").append(pwd).append(":").append(i);
+            }
+            if (n == 0) return null;
+            filterNote = "本地清单：《" + item.str("name") + "》共 " + n + " 集（不调用整季解析）";
+            String list = url.toString();
+            return new String[]{"夸父原$$$夸父智", list + "$$$" + list};
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 把一条文件拼成它自己的 tX JSON（Gson 的字段名，它拿去转存 + 取直链） */
+    String txJson(String pwd, J share, J f, String flag) {
+        String size = f.str("s");
+        String created = f.str("c");
+        return "{"
+                + "\"fid\":" + J.q(f.str("fid"))
+                + ",\"share_fid_token\":" + J.q(f.str("tk"))
+                + ",\"file_name\":" + J.q(f.str("n"))
+                + ",\"size\":" + (size.isEmpty() ? "0" : size)
+                + ",\"pdir_fid\":" + J.q(f.str("p"))
+                + ",\"format_type\":" + J.q(f.str("t"))
+                + ",\"l_created_at\":" + (created.isEmpty() ? "0" : created)
+                + ",\"sId\":" + J.q(pwd)
+                + ",\"sToken\":" + J.q(share.str("stoken"))
+                + ",\"shareUser\":" + J.q(share.str("author"))
+                + ",\"sTitle\":" + J.q(share.str("title"))
+                + ",\"pg\":\"1\""
+                + ",\"parent\":" + J.q(f.str("d"))
+                + ",\"sub\":" + J.q(share.str("title"))
+                + ",\"vodName\":" + J.q(f.str("d"))
+                + ",\"flag\":" + J.q(flag)
+                + "}";
     }
 
     /** 按一组关键词筛剧集：返回 {线路名, 播放列表, 留下的集数, 总集数} */
@@ -437,6 +565,22 @@ public class Anime4KGuard extends Spider {
 
     @Override
     public String playerContent(String flag, String id, List<String> vipFlags) {
+        if (id != null && id.startsWith("4k:tx:")) {
+            try {
+                String spec = id.substring("4k:tx:".length());
+                int cut = spec.lastIndexOf(':');
+                String pwd = spec.substring(0, cut);
+                int idx = Integer.parseInt(spec.substring(cut + 1));
+                J share = share(pwd);
+                List<J> files = share.arr("files");
+                if (idx < 0 || idx >= files.size()) return media("清单里没有这一集（分享变了？）");
+                // 把这一条文件的 fid/名字/大小/share_fid_token/上级目录 + 分享信息
+                // 拼成它自己的 tX JSON；然后把 id 换成它，继续走下面的转发（转存 + 取直链还是它那套）
+                id = txJson(pwd, share, files.get(idx), flag);
+            } catch (Throwable t) {
+                return media("取流失败：" + t);
+            }
+        }
         if (id != null && id.startsWith("4k:diag")) {
             return media("这是诊断线路：请回到该条目的简介看失败原因（详情页上方文字）");
         }
@@ -644,6 +788,13 @@ public class Anime4KGuard extends Spider {
             return new ArrayList<J>();
         }
         List<J> arr() { return v instanceof List ? (List<J>) v : new ArrayList<J>(); }
+
+        /** 对象的 key 列表（清单里的 dirs 按 fid 挂子节点要用） */
+        @SuppressWarnings("unchecked")
+        List<String> keys() {
+            if (v instanceof Map) return new ArrayList<String>(((Map<String, J>) v).keySet());
+            return new ArrayList<String>();
+        }
 
         static String q(String s) { return s == null ? "\"\"" : "\"" + Json.esc(s) + "\""; }
 
