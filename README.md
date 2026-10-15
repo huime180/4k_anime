@@ -9,17 +9,15 @@
                                     数据站（纯静态，可上 Cloudflare Pages）
                                     anime.json / meta.json / cover/*.png / 索引页
                                                     │
-                    影视仓 载入配置 A 或 B ◄────────┘
+                    影视仓 载入配置 A ◄──────────────┘
                        │
                        ├─ 配置 A：csp_Anime4KGuard  →  调 jar 里**饭太硬自己的**夸克解析
                        │                              （夸父原 / 夸父智，/proxy/play/... 代理直链）
-                       └─ 配置 B：csp_Quark4K        →  **我们自己的**解析（转存 + 取链，
-                                                      夸父原 / 夸父智，CDN 直链 + header）
 ```
 
 * 数据源：在线表格 `ec61d240-…`（Luckysheet 结构，源自 Google Sheet）
 * 内容规模：**771 条 / 563 个独立夸克分享**，3 个顶层分类、19 个类别
-* 运行依赖：数据站是**纯静态**；A/B 两条线的解析都在 App 内，**不需要**本机服务
+* 运行依赖：数据站是**纯静态**；解析在 App 内完成，**不需要**本机服务
 * 自动同步：GitHub Actions **每周一**拉一次表格，跟随饭太硬官方 jar 重建合并 jar，并部署数据站
 
 ---
@@ -40,11 +38,8 @@ https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/co
 | 详情 / 播放 | 转发给 jar 里饭太硬原生的夸克解析 `Cloud_quark`（经 `Init.loader()` 的子 DexClassLoader），线路名就是它的 **夸父原 / 夸父智**，播放地址是 app 本地代理形态 `http://127.0.0.1:<端口>/proxy/play/…` |
 | 夸克会话 | 由饭太硬那套负责：在「🗂我的云盘┃配置」里扫码登录一次即可 |
 
-> 仓库里还留着一份**旧方案** `config/4k_anime_with_fty_cms.json`（type 1 苹果CMS，需要本机 `src/server.py`），
-> 以及 `csp_Quark4K`（自带转存+取流的那套实现，代码仍在 jar 里）。
-> 需要时把 `src/fetch_fty.py` 里 `own` 那一档重新加进输出即可，目前不生成、不维护。
 
-## 二、数据站（只放数据，不含解析）
+## 二、数据站（只放数据，不含解析；可搬 Cloudflare Pages）
 
 `public/` 就是数据站根目录：`anime.json` / `meta.json` / `cover/*.png` / `index.html`。
 
@@ -58,7 +53,6 @@ https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/co
 | 类 | 作用 |
 | --- | --- |
 | `Anime4KGuard` | 配置 A：详情/播放原样转发给解密 dex 里的 `Cloud_quark`（经 `Init.loader()`） |
-| `Quark4K` | 配置 B：自带的极简夸克客户端（转存 + `/file/download` 直链 / `/file/play` 转码流） |
 
 每次 Action 会 `src/fetch_upstream_jar.py` 跟随官方 jar（校验 md5、解包）→
 `build_spider.sh`（javac + d8 合并）→ 提交新 jar；拿不到就保留现有 jar。

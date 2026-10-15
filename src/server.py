@@ -871,11 +871,10 @@ class Handler(BaseHTTPRequestHandler):
     }
 
     def static(self, path):
-        """把 public/ 当静态目录发（公开的玩偶式数据站 /tvfan/… 走这里）。
+        """把 public/ 当静态目录发（/anime.json、/cover/… 之外的其它公开文件走这里）。
 
         以前本地只有 /anime.json /meta.json /cover/ 这几个写死的路由，
-        public/tvfan/ 这类目录在本机是 404（{"error":"not found","path":"/tvfan"}）——
-        ext.siteUrl 指向本机时就会「站点打不开」。
+        public/ 下的其它路径在本机是 404（{"error":"not found","path":"/…"}）。
         """
         base = os.path.join(ROOT, "public")
         rel = path.lstrip("/")

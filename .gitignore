@@ -33,3 +33,6 @@ spider/pack/
 spider/testout/
 
 # jar 历史副本：只保留最近几个（由 build_spider.sh 自己裁剪后提交）
+
+# 构建产物（只提交 jar/h/<内容md5>.jar，配置引用的就是它）
+jar/4k_anime_fty_merged.jar

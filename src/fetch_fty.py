@@ -34,7 +34,6 @@ import urllib.request
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "config", "4k_anime_with_fty_cms.json")          # 旧：type 1，走本机解析服务
 OUT_SPIDER = os.path.join(ROOT, "config", "4k_anime_with_fty.json")        # 配置 A：解析用饭太硬 jar 自带的夸克实现
-OUT_OWN = os.path.join(ROOT, "config", "4k_anime_own.json")                # （旧）配置 B：自带解析，已停用
 
 # 数据源站点（只放 anime.json/meta.json/cover，不含任何解析）：默认 GitHub Pages，
 # 换 Cloudflare Pages 时把它设成 https://<项目>.pages.dev 即可（Action 里来自 vars.DATA_BASE）
@@ -45,7 +44,6 @@ RAW_BASE = "https://raw.githubusercontent.com/huime180/4k_anime/main"
 GH = "https://gh-proxy.com/"
 DATA_RAW_RAW = RAW_BASE + "/public/anime.json"
 MERGED_JAR = GH + RAW_BASE + "/jar/4k_anime_fty_merged.jar"
-ONLY_JAR = GH + RAW_BASE + "/jar/4k_anime_only.jar"           # 只含我们两个类的小 jar（诊断用）
 UPSTREAM_INFO = os.path.join(ROOT, "data", "upstream.json")   # 上游官方 jar 的地址+md5
 JAR_DIR = os.path.join(ROOT, "jar")
 
@@ -102,11 +100,6 @@ def official_jar() -> str:
     except (OSError, ValueError):
         pass
     return gh_wrap("https://raw.githubusercontent.com/youhunwl/TVBox/master/jar/饭太硬.jar")
-OUT_MIN = os.path.join(ROOT, "config", "4k_anime_min.json")   # （旧）最小诊断配置，已停用
-
-# 玩偶哥哥式静态数据站的地址（public/tvfan/）：WoGG.playerContent 会校验
-# siteUrl 里必须含 "wogg" 或 "tvfan"，所以路径里保留了 tvfan
-SITE_URL = (os.environ.get("SITE_URL") or (DATA_BASE + "/tvfan/"))
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -253,45 +246,6 @@ def build_line(host: str, kind: str = "cms") -> dict:
                 "data2": gh_wrap(DATA_RAW_RAW),
             },
         }
-    if kind == "wogg":
-        # 配置 A：**一行自己的代码都不用** —— 用官方 csp_WoGGGuard，siteUrl 指到我们的静态数据站。
-        # 它按固定选择器抓列表/详情（见 src/build_site.py 的契约注释），
-        # 播放链接就写在详情页 div.module-row-info > a 的 data-clipboard-text 里，
-        # 取流/登录依旧由 jar 里的网盘引擎负责。
-        return {
-            "key": "4k_anime",
-            "name": "🎬4K动漫A┃夸克解析",
-            "type": 3,
-            "api": "csp_Anime4KGuard",
-            "timeout": 30,
-            "searchable": 1,
-            "quickSearch": 1,
-            "changeable": 0,
-            "ext": {
-                "Cloud-drive": "tvfan/Cloud-drive.txt",
-                "data": DATA_BASE + "/anime.json",
-                "data2": gh_wrap(DATA_RAW_RAW),
-            },
-        }
-    if kind == "own":
-        # 配置 B：解析用我们自己那套（csp_Quark4K）。cookie 可以手填，也可以留空——
-        # 留空时会先反射读饭太硬那套的登录态（「我的云盘」扫码后就有），
-        # 最后才去本机 server.py 兜底。
-        return {
-            "key": "4k_anime",
-            "name": "🎬4K动漫B┃自带解析",
-            "type": 3,
-            "api": "csp_Quark4K",
-            "timeout": 30,
-            "searchable": 1,
-            "quickSearch": 1,
-            "changeable": 0,
-            "ext": {
-                "cookie": "",
-                "data": DATA_BASE + "/anime.json",
-                "data2": gh_wrap(DATA_RAW_RAW),
-            },
-        }
     return {
         "key": "4k_anime",
         "name": "🎬4K动漫┃夸克",
@@ -317,21 +271,16 @@ def merge(cfg: dict, host: str, kind: str = "cms") -> dict:
     # `spider` 用**我们的合并 jar**：它就是「官方 jar（loader dex + assets/.so + 加密 guard）
     # + 我们两个类」重建出来的，所以
     #   - 官方那些 csp_*Guard 线路照旧能用（内容就是官方那份，只是多了我们两个类）；
-    #   - 我们那条线（csp_Anime4KGuard / csp_Quark4K）的类也在同一个 jar 里，
-    #     不需要站点级 jar（那个影视仓认不认还是未知数）。
+    #   - 我们那条线（csp_Anime4KGuard）的类也在同一个 jar 里，不需要站点级 jar。
     # 注意：这个 jar 的地址必须是 github 系地址才能套 gh-proxy（第三方 CDN 套了会拉不到，
     # 那次的代价就是「所有站点分类全没」）。
-    if kind in ("spider", "own"):
+    if kind == "spider":
         cfg["spider"] = jar_spec(MERGED_JAR, "4k_anime_fty_merged.jar")
-    elif kind == "wogg":
-        cfg["spider"] = official_jar()      # 官方 WoGG 线路才用官方 jar
-    if kind in ("spider", "own", "wogg"):
         cfg["_说明"] = ("饭太硬官方配置（自动解析） + 4k_anime 线路"
-                        "（插在「我的云盘」之后，自带 jar 字段）")
-        cfg["_4k动漫"] = ("数据站 " + SITE_URL + "（纯静态，公开/tvfan/，站点里没有任何解析）；"
-                          "线路直接用官方 csp_WoGGGuard 抓它，spider 保持官方 jar 不动，"
-                          "条目也不需要自带 jar。夸克登录见「我的云盘」。"
-                          "本文件由 src/fetch_fty.py 自动生成。")
+                        "（插在「我的云盘」之后）")
+        cfg["_4k动漫"] = ("目录来自 " + DATA_BASE + "/anime.json（站点不含解析）；"
+                          "详情/播放经 Init.loader() 转发给 jar 里饭太硬原生的夸克解析"
+                          "（夸克登录见「我的云盘」）。本文件由 src/fetch_fty.py 自动生成。")
     else:
         cfg["_说明"] = ("饭太硬官方配置（自动解析） + 4k_anime 线路"
                         "（插在「我的云盘」之后）")
@@ -347,8 +296,6 @@ def main() -> int:
     ap.add_argument("--host", default=DEFAULT_HOST)
     ap.add_argument("--out", default=OUT)
     ap.add_argument("--out-spider", default=OUT_SPIDER)
-    ap.add_argument("--out-own", default=OUT_OWN)
-    ap.add_argument("--out-min", default=OUT_MIN)
     args = ap.parse_args()
 
     try:
