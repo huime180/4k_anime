@@ -705,5 +705,5 @@
  ],
  "_说明": "饭太硬官方配置（自动解析） + 4k_anime 线路（插在「我的云盘」之后）",
  "_4k动漫": "目录来自 https://huime180.github.io/4k_anime/anime.json（站点不含解析）；详情/播放经 Init.loader() 转发给 jar 里饭太硬原生的夸克解析（夸克登录见「我的云盘」）。本文件由 src/fetch_fty.py 自动生成。",
- "_generated_at": "2026-10-16 19:25:43 UTC"
+ "_generated_at": "2026-10-16 19:27:09 UTC"
 }
