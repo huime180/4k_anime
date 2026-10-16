@@ -485,15 +485,20 @@ public class Anime4KGuard extends Spider {
             String stoken = round == 0 ? stored : newToken(pwd);
             if (stoken == null || stoken.isEmpty()) continue;
             try {
-                String url = "https://drive-h.quark.cn/1/clouddrive/share/sharepage/detail"
-                        + "?pr=ucpro&fr=pc&pwd_id=" + enc(pwd) + "&stoken=" + enc(stoken)
-                        + "&pdir_fid=" + enc(pdirFid) + "&force=0&_page=1&_size=200&__dt=1&__t=" + now;
-                String listJson = http("GET", url, null, null, "https://pan.quark.cn/");
-                J list = J.parse(listJson).node("data");
-                if (list == null) continue;
+                // 只列**这个文件所在的那一层目录**（不递归、不碰整包）：
+                // 一页 200 条够绝大多数；目录里超过 200 个文件时再翻页找。
                 java.util.HashMap<String, String> map = new java.util.HashMap<String, String>();
-                for (J f : list.arr("list")) {
-                    map.put(f.str("fid"), f.str("share_fid_token"));
+                for (int page = 1; page <= 3; page++) {
+                    String url = "https://drive-h.quark.cn/1/clouddrive/share/sharepage/detail"
+                            + "?pr=ucpro&fr=pc&pwd_id=" + enc(pwd) + "&stoken=" + enc(stoken)
+                            + "&pdir_fid=" + enc(pdirFid) + "&force=0&_page=" + page
+                            + "&_size=200&__dt=1&__t=" + now;
+                    String listJson = http("GET", url, null, null, "https://pan.quark.cn/");
+                    J list = J.parse(listJson).node("data");
+                    if (list == null) break;
+                    List<J> rows = list.arr("list");
+                    for (J f : rows) map.put(f.str("fid"), f.str("share_fid_token"));
+                    if (map.containsKey(fid) || rows.size() < 200) break;
                 }
                 String tk = map.get(fid);
                 if (tk == null || tk.isEmpty()) continue;
