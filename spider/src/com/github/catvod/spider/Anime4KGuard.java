@@ -400,6 +400,11 @@ public class Anime4KGuard extends Spider {
                 String where = norm(f.str("d"));
                 if (!want.contains(where)) continue;
                 String label = f.str("n");
+                String low = label.toLowerCase();
+                if (low.endsWith(".zip") || low.endsWith(".rar") || low.endsWith(".7z")
+                        || low.endsWith(".tar") || low.endsWith(".gz")) {
+                    label = label + "（压缩包，需下载解压）";    // 这种点了播不了，直接写清楚
+                }
                 if (!where.equals(base)) label = f.str("d") + " " + label;   // 分季目录的加个前缀
                 if (n++ > 0) url.append("#");
                 url.append(label).append("$4k:tx:").append(pwd).append(":").append(i);
