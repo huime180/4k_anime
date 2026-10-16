@@ -474,7 +474,13 @@ public class Anime4KGuard extends Spider {
         putNum(sb, done, "l_created_at", f.str("c"));
         put(sb, done, "sId", pwd);
         put(sb, done, "sToken", share.str("stoken"));
-        put(sb, done, "shareUser", share.str("author_name"));   // 分享者昵称（它的 author 是对象，别塞进去）
+        // 分享者昵称；老清单没有 author_name 时，author 是对象 -> 宁可空着也别塞 dict 文本
+        String user = share.str("author_name");
+        if (user.isEmpty()) {
+            String a = share.str("author");
+            user = a.startsWith("{") ? "" : a;
+        }
+        put(sb, done, "shareUser", user);
         put(sb, done, "pg", ref != null && !ref.str("pg").isEmpty() ? ref.str("pg") : "1");
         put(sb, done, "parent", f.str("d"));
         put(sb, done, "vodName", f.str("d"));
