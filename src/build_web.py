@@ -19,7 +19,7 @@ HTML = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>4K动漫 · 夸克接口</title>
+<title>4K动漫 · 线路与数据索引</title>
 <style>
 :root{--bg:#0f1017;--card:#191b26;--line:#282b3a;--fg:#e9e9f2;--dim:#8b90a8;--acc:#7cc0ff;--ok:#5ad07a;--warn:#ffb454}
 *{box-sizing:border-box}
@@ -58,29 +58,33 @@ code{background:var(--card);padding:3px 7px;border-radius:6px;border:1px solid v
 </head>
 <body>
 <header>
-  <h1>🎬 4K动漫 · 夸克线路
-    <span class="tag" id="mode">静态索引</span>
+  <h1>4K动漫 · 线路与数据索引
+    <span class="tag" id="mode">静态页面</span>
   </h1>
   <div class="meta" id="meta">加载中…</div>
   <div class="bar">
-    <input id="q" placeholder="搜索番名，例如：孤独摇滚">
-    <button id="clear">重置</button>
-    <button id="reload">🔄 刷新数据</button>
+    <input id="q" placeholder="按番名检索">
+    <button id="clear">清空条件</button>
+    <button id="reload">重新载入</button>
   </div>
   <nav id="nav"></nav>
 </header>
 <div id="status">正在加载数据…</div>
 <main id="main"></main>
 <footer>
-  <h3>怎么用</h3>
-  ① 下面那条地址是 <b>饭太硬配置 + 4k动漫线路</b>，直接粘进「影视仓 / 电视 TVBox」的设置 → 配置地址即可；
-  这条线的详情/播放转发给 jar 里饭太硬自己的夸克解析（和玩偶哥哥同一条路），全程在影视仓里跑，<b>不需要</b>任何服务端解析。<br>
+  <h3>使用说明</h3>
+  <p>一、复制下方「配置地址」，粘贴到影视仓 / TVBox 的「配置地址」中。<br>
+     二、进入线路 <b>4K动漫A┃夸克解析</b>（<code>csp_Anime4KGuard</code>）浏览与播放。</p>
+  <p>该线路的目录数据取自本站静态文件；详情与播放由软件内部完成，本站不承担解析，亦无需部署服务端。
+     夸克会话在影视仓「我的云盘 ┃ 配置」中登录。</p>
   <h3 style="margin-top:14px">配置地址</h3>
-  <div class="cfg"><span>配置地址（csp_Anime4KGuard · 转发给 jar 里的夸克解析）</span><code id="cfgA"></code><span class="copy" data-t="cfgA">复制</span></div>
-  <div class="cfg"><span>本页数据源</span><code id="cfgData"></code></div>
+  <div class="cfg"><span>配置</span><code id="cfgA"></code><span class="copy" data-t="cfgA">复制</span></div>
+  <div class="cfg"><span>本站数据文件</span><code id="cfgData"></code></div>
   <p id="hint" style="margin-top:12px"></p>
-  <p>数据来自在线表格自动同步；本页只做索引，播放请在影视仓里打开 4k动漫 线路，
-     或到 <a href="https://pan.quark.cn" target="_blank" rel="noreferrer" style="color:var(--acc)">夸克网盘</a> 打开对应分享。</p>
+  <h3 style="margin-top:14px">数据来源</h3>
+  <p>条目数据来自在线表格，每周一自动同步；封面与简介取自 Bangumi。
+     本页仅提供索引与数据文件；播放请在影视仓内进行，或通过条目中的网盘链接打开对应分享
+     （<a href="https://pan.quark.cn" target="_blank" rel="noreferrer" style="color:var(--acc)">夸克网盘</a>）。</p>
 </footer>
 <script>
 const DIR = location.origin + location.pathname.replace(/[^/]*$/, '');
@@ -171,12 +175,12 @@ function env(){
     state.anime = anime; state.meta = meta || {};
     const withCover = anime.items.filter(it => (state.meta[normalizeName(it.name)]||{}).image).length;
     document.getElementById('meta').innerHTML =
-      `共 <b>${anime.total}</b> 部 ｜ 已有封面 <b>${withCover}</b> ｜ 有详情 `
+      `共 <b>${anime.total}</b> 条 ｜ 含封面 <b>${withCover}</b> ｜ 含详情 `
       + `<b>${((anime._details||{}).filled)||0}</b> ｜ 夸克 <b>${(anime.stat||{})['夸克']||0}</b> `
-      + `｜ 同步于 ${new Date(anime.synced_at).toLocaleString('zh-CN')}`;
+      + `｜ 同步时间 ${new Date(anime.synced_at).toLocaleString('zh-CN')}`;
     renderNav(); render();
   }catch(e){
-    document.getElementById('status').textContent = '数据加载失败：' + e;
+    document.getElementById('status').textContent = '数据载入异常：' + e;
   }
 })();
 </script>
@@ -190,7 +194,7 @@ def main():
     out = os.path.join(PUBLIC_DIR, "index.html")
     with open(out, "w", encoding="utf-8") as fh:
         fh.write(HTML)
-    print("✅ 生成 %s（%d 字节）—— 纯静态索引页，不含解析" % (out, len(HTML.encode("utf-8"))))
+    print("✅ 生成 %s（%d 字节）—— 静态索引页" % (out, len(HTML.encode("utf-8"))))
 
 
 if __name__ == "__main__":
