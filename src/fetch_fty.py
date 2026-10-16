@@ -38,7 +38,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "config", "4k_anime_with_fty.json")               # 唯一的配置：csp_Anime4KGuard
 
 # 数据源站点（只放 anime.json/meta.json/cover，不含任何解析）：默认 GitHub Pages，
-# 换 Cloudflare Pages 时把它设成 https://<项目>.pages.dev 即可（Action 里来自 vars.DATA_BASE）
+# 换绑定域名时把它设为 https://<域名> 即可（Action 里来自 vars.DATA_BASE）
 DATA_BASE = (os.environ.get("DATA_BASE") or "https://huime180.github.io/4k_anime").rstrip("/")
 
 # 饭太硬官方配置里的 jar 也是套了 gh-proxy（国内直连 raw 常被墙），我们照做

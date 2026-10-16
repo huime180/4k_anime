@@ -1,5 +1,7 @@
 # 4k_anime · 4K 动漫夸克线路
 
+<p align="right">数据站：<a href="https://huime180.github.io/4k_anime/">https://huime180.github.io/4k_anime/</a></p>
+
 把一份在线更新的 4K 动漫表格同步为影视仓（TVBox / 影视仓）可直接导入的配置：
 分类、封面、年份 / 地区 / 导演 / 演员 / 简介与合集剧集列表均由本项目生成；
 解析、登录与取流在 App 内由饭太硬 jar 自带的夸克实现完成，本项目站点只放静态数据。
@@ -16,7 +18,6 @@
 | 项 | 值 |
 | --- | --- |
 | 数据源 | 在线表格（Luckysheet 结构） |
-| 数据站 | <https://huime180.github.io/4k_anime/>（可迁 Cloudflare Pages） |
 | 内容规模 | 771 条条目，3 个顶层分类，19 个类别 |
 | 运行依赖 | Python 3.9+ 标准库；数据站为纯静态站点，无需服务端 |
 | 站点解析 | 无（只有 JSON 与图片） |
@@ -59,10 +60,8 @@ https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/co
 
 | 文档 | 内容 |
 | --- | --- |
-| [`docs/plan.md`](docs/plan.md) | 项目计划与设计（目标、原则、系统构成、阶段计划、验收口径） |
 | [`docs/implementation.md`](docs/implementation.md) | 实现流程（同步 → 匹配 → 补全 → jar → 配置 → 导出 → 主页 → 自检 → 自动同步 → 运行时链路 → 本地运行） |
 | [`docs/fty-jar.md`](docs/fty-jar.md) | 饭太硬 jar 适配与当前 jar 结构（壳 dex / 原生库 / 加密 dex、加载链路、合并打包、适配要点、夸克接口） |
-| [`docs/cloudflare-pages.md`](docs/cloudflare-pages.md) | 数据站迁移到 Cloudflare Pages |
 
 ---
 

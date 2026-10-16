@@ -153,7 +153,7 @@ python3 src/check_config.py
 │   └── test/                    # 独立检查程序
 ├── build_spider.sh              # javac + d8 + 合并打包
 ├── data/                        # 同步结果与缓存（anime.json / meta.json / upstream.json）
-├── public/                      # 数据站根目录（GitHub Pages / Cloudflare Pages）
+├── public/                      # 数据站根目录（GitHub Pages）
 ├── jar/h/                       # 合并 jar（文件名含内容 md5）
 ├── config/                      # 生成的配置（4k_anime_with_fty.json）
 ├── docs/                        # 文档

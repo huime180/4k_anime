@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""生成 public/index.html —— 纯静态索引页（GitHub Pages / Cloudflare Pages 共用）
+"""生成 public/index.html —— 纯静态索引页（部署在 GitHub Pages）
 
 这个站点**不含任何解析功能**：没有服务端、没有 CMS 接口、没有扫码登录，
 只做两件事：浏览表格里的番剧（封面/评分/年份/地区）+ 复制配置地址。
@@ -26,6 +26,9 @@ HTML = r"""<!doctype html>
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.6 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
 header{position:sticky;top:0;z-index:5;background:rgba(15,16,23,.94);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);padding:14px 18px}
 h1{margin:0;font-size:17px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.top{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.site{color:var(--acc);text-decoration:none;font-size:12.5px;border:1px solid var(--line);padding:3px 10px;border-radius:99px;white-space:nowrap}
+.site:hover{border-color:var(--acc)}
 .meta{margin-top:6px;color:var(--dim);font-size:12px}
 .bar{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 input{flex:1;min-width:170px;background:var(--card);border:1px solid var(--line);color:var(--fg);padding:8px 12px;border-radius:9px;outline:none}
@@ -58,9 +61,12 @@ code{background:var(--card);padding:3px 7px;border-radius:6px;border:1px solid v
 </head>
 <body>
 <header>
-  <h1>4K动漫 · 线路与数据索引
-    <span class="tag" id="mode">静态页面</span>
-  </h1>
+  <div class="top">
+    <h1>4K动漫 · 线路与数据索引
+      <span class="tag" id="mode">静态页面</span>
+    </h1>
+    <a class="site" id="site" href="https://huime180.github.io/4k_anime/">huime180.github.io/4k_anime</a>
+  </div>
   <div class="meta" id="meta">加载中…</div>
   <div class="bar">
     <input id="q" placeholder="按番名检索">
