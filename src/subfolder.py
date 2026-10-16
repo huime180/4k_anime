@@ -335,7 +335,10 @@ def main():
                         info["p"] = "0"
                 dirs_all.pop(wrapper, None)
             dirs_all.setdefault("0", {"n": "分享根目录", "p": ""})
-            man = {"pwd": pwd, "stoken": stoken, "author": tk.get("author") or "",
+            author = tk.get("author")
+            author_name = author.get("nick_name") if isinstance(author, dict) else (author or "")
+            man = {"pwd": pwd, "stoken": stoken, "author": author or "",
+                   "author_name": author_name or "",
                    "title": tk.get("title") or "", "synced_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                    "file_num": tk.get("file_num"), "dirs": dirs_all, "files": files}
             with open(os.path.join(TREE_DIR, pwd + ".json"), "w", encoding="utf-8") as fh:
