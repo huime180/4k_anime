@@ -475,27 +475,45 @@ public class Anime4KGuard extends Spider {
             String tk = m.get(fid);
             if (tk != null && !tk.isEmpty()) return new String[]{(String) hit[2], tk};
         }
+        // 用**清单里那只 stoken** 列一下这个目录，只取这只文件的新 token 就行
+        // （实测 stoken 可复用：几天前那只照样能列目录；而文件 token 必须和
+        //  「列目录时用的那只 stoken」成对使用 —— 所以返回的就是这一对）。
+        // 列不动（分享被改/删、stoken 失效）才去申请新 stoken 重来一次。
+        String stored = "";
+        try { stored = share(pwd).str("stoken"); } catch (Throwable ignore) { }
+        for (int round = 0; round < 2; round++) {
+            String stoken = round == 0 ? stored : newToken(pwd);
+            if (stoken == null || stoken.isEmpty()) continue;
+            try {
+                String url = "https://drive-h.quark.cn/1/clouddrive/share/sharepage/detail"
+                        + "?pr=ucpro&fr=pc&pwd_id=" + enc(pwd) + "&stoken=" + enc(stoken)
+                        + "&pdir_fid=" + enc(pdirFid) + "&force=0&_page=1&_size=200&__dt=1&__t=" + now;
+                String listJson = http("GET", url, null, null, "https://pan.quark.cn/");
+                J list = J.parse(listJson).node("data");
+                if (list == null) continue;
+                java.util.HashMap<String, String> map = new java.util.HashMap<String, String>();
+                for (J f : list.arr("list")) {
+                    map.put(f.str("fid"), f.str("share_fid_token"));
+                }
+                String tk = map.get(fid);
+                if (tk == null || tk.isEmpty()) continue;
+                tkCache.put(key, new Object[]{now, map, stoken});
+                return new String[]{stoken, tk};
+            } catch (Throwable ignore) { }
+        }
+        return null;                           // 都拿不到就退回清单里那份
+    }
+
+    /** 申请一只新的分享令牌（只在旧 stoken 列不动时才用） */
+    private String newToken(String pwd) {
         try {
             String body = "{\"pwd_id\":" + J.q(pwd) + ",\"passcode\":\"\"}";
             String tkJson = http("POST", "https://drive-h.quark.cn/1/clouddrive/share/sharepage/token",
                     body, null, "https://pan.quark.cn/");
-            String stoken = J.parse(tkJson).node("data") == null ? "" : J.parse(tkJson).node("data").str("stoken");
-            if (stoken.isEmpty()) return null;
-            String url = "https://drive-h.quark.cn/1/clouddrive/share/sharepage/detail"
-                    + "?pr=ucpro&fr=pc&pwd_id=" + enc(pwd) + "&stoken=" + enc(stoken)
-                    + "&pdir_fid=" + enc(pdirFid) + "&force=0&_page=1&_size=200&__dt=1&__t=" + now;
-            String listJson = http("GET", url, null, null, "https://pan.quark.cn/");
-            J list = J.parse(listJson).node("data");
-            if (list == null) return null;
-            java.util.HashMap<String, String> map = new java.util.HashMap<String, String>();
-            for (J f : list.arr("list")) {
-                map.put(f.str("fid"), f.str("share_fid_token"));
-            }
-            tkCache.put(key, new Object[]{now, map, stoken});
-            String tk = map.get(fid);
-            return tk == null ? null : new String[]{stoken, tk};
+            J data = J.parse(tkJson).node("data");
+            return data == null ? "" : data.str("stoken");
         } catch (Throwable t) {
-            return null;                       // 拿不到就退回清单里那份
+            return "";
         }
     }
 

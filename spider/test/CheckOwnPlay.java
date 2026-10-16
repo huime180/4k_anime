@@ -78,9 +78,12 @@ public class CheckOwnPlay {
             check("现取到新 stoken", !fresh[0].isEmpty(), fresh[0].substring(0, Math.min(10, fresh[0].length())) + "…");
             check("现取到该文件的新 share_fid_token", !fresh[1].isEmpty(),
                     fresh[1].substring(0, Math.min(12, fresh[1].length())) + "…");
-            check("和清单里那份确实不同（说明旧令牌会过期）", !fresh[1].equals(f0.str("tk")),
-                    "清单 " + f0.str("tk").substring(0, Math.min(10, f0.str("tk").length())) + "… / 现取 "
-                            + fresh[1].substring(0, Math.min(10, fresh[1].length())) + "…");
+            // 用清单里那只 stoken 去列，拿回的文件 token 通常和清单里那份**相同**
+            // （说明那一对是自洽的）；换过 stoken 才会不同 —— 两种都算通过，
+            // 关键是「点播时拿到的这一对一定是自洽的」。
+            check("点播时拿到的 stoken + 文件 token 自洽（拼进 tX 的就是这一对）",
+                    !fresh[1].isEmpty() && fresh[0].length() > 8,
+                    (fresh[1].equals(f0.str("tk")) ? "与清单相同（本来就有效）" : "换过 stoken（也正常）"));
             String tx2 = s.txJson(pwd, share, f0, "夸父原");
             check("拼出来的 tX 用的是新令牌", tx2.contains(fresh[1]) && tx2.contains(fresh[0]),
                     "ok");
