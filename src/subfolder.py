@@ -164,12 +164,21 @@ def second_level(pwd_id):
 
 
 def _norm(text):
-    s = _TRIM.sub("", str(text or ""))
-    s = re.sub(r"[\[\(（【][^\]\)）】]*[\]\)）】]", "", s)
-    s = re.sub(r"^\s*\d{1,4}\s*[.\-_、 ]\s*", "", s)
-    s = _SEASON.sub("", s)
-    s = re.sub(r"[\s\-_~·・:：,，。.、!！?？/\\|+&'’]+", "", s)
-    return s.translate(_TRAD2SIMP).lower()
+    """归一化：**去掉括号（含里面的内容）、所有数字、所有符号**，只留文字
+
+    按你说的「去掉双方的符号、数字、括号内的内容再去匹配」，这样
+    「黄泉使者（NASW）」「名侦探 光之美少女（1月番剧）」「JOJO的奇妙冒险 Part6 石之海」
+    这些差异都不影响比对。
+    """
+    s = str(text or "")
+    s = re.sub(r"[\[\(（【][^\]\)）】]*[\]\)）】]", "", s)          # 括号和里面的内容
+    s = _TRIM.sub("", s)                                              # 合集/全系列/剧场版…这些尾巴
+    s = re.sub(r"第\s*[0-9一二三四五六七八九十]*\s*[期季部]", "", s)        # 第2期 / 第二季 / 第期
+    s = re.sub(r"\d+", "", s)                                        # 数字
+    s = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+", "", s)  # 符号/空格
+    s = s.translate(_TRAD2SIMP).lower()
+    s = re.sub(r"(?i)(part|season|s)$", "", s)                        # 尾巴上的 Part / S / Season
+    return s
 
 
 def _season(text):
@@ -178,6 +187,27 @@ def _season(text):
         return 0
     raw = m.group(1) or m.group(2) or ""
     return int(raw) if raw.isdigit() else _CN_NUM.get(raw, 0)
+
+
+def _score(variants, folder, want_season=0):
+    """只做「去符号/数字/括号后」的严格比对：完全一样 = 3，互相包含 = 2，否则 0
+
+    （之前那套相似度/共享词/编辑距离问题太多，按你说的简化掉）
+    """
+    hay = _norm(folder)
+    if not hay:
+        return 0.0
+    best = 0.0
+    for v in variants:
+        if not v:
+            continue
+        if v == hay:
+            return 3.0
+        if len(v) >= 2 and v in hay:
+            best = max(best, 2.0)
+        elif len(hay) >= 2 and hay in v:
+            best = max(best, 1.8)
+    return best
 
 
 def _variants(item, entry):
@@ -192,26 +222,6 @@ def _variants(item, entry):
                 if len(n) >= 2 and n not in out:
                     out.append(n)
     return out
-
-
-def _score(variants, folder, want_season=0):
-    hay = _norm(folder)
-    if not hay:
-        return 0.0
-    best = 0.0
-    for v in variants:
-        if v == hay:
-            best = max(best, 3.0)
-        elif v in hay or (hay in v and len(hay) >= 2):
-            best = max(best, 1 + 0.4 * len(hay) / max(len(hay), len(v)))
-        elif len(v) >= 6 and v[:6] in hay:
-            best = max(best, 0.6)
-    if best <= 0:
-        return 0.0
-    got = _season(folder)
-    if want_season and got:
-        best += 2 if got == want_season else -1
-    return best
 
 
 def pick(item, entry, folders):
@@ -239,50 +249,6 @@ def pick(item, entry, folders):
             if ratio > best_score:
                 best, best_score = (fid, name), ratio
     return best if best_score >= 0.85 else ("", "")
-
-
-def _near(variants, want, name):
-    """近似分（0 起，≥0.6 才算认出）
-
-    三档：
-      1) 整名/别名包含（括号、季度后缀、序号都已经在 _norm 里剥掉了）；
-      2) 共享**中文**词（≥2 个两字词）+ 词重合度 ≥0.2
-         —— 「打史莱姆300年 第二期」对上「打了300年的史莱姆，不知不觉就练到了满级」；
-         纯英文的偶合（chiramune ↔ onepunchman）不算；
-      3) 只差一两个字（difflib ≥0.7）—— 表格写错字那种。
-    季数明确对不上就不猜。
-    """
-    best = _score(variants, name, want)
-    hay = _norm(name)
-    if not hay:
-        return best
-    got = _season(name)
-    if want and got and got != want:
-        return best
-
-    def bigrams(t):
-        return set(t[i:i + 2] for i in range(len(t) - 1))
-
-    def has_cjk(t):
-        return any("\u4e00" <= c <= "\u9fff" for c in t)
-
-    hb = bigrams(hay)
-    if hb:
-        for v in variants:
-            vb = bigrams(_norm(v))
-            if not vb:
-                continue
-            shared = vb & hb
-            shared_cjk = [x for x in shared if has_cjk(x)]
-            ov = len(shared) / float(len(vb | hb))
-            if len(shared_cjk) >= 2 and ov >= 0.2:
-                best = max(best, ov * 3.2)
-            if len(v) >= 4 and abs(len(hay) - len(v)) <= 3:
-                import difflib
-                ratio = difflib.SequenceMatcher(None, v, hay).ratio()
-                if ratio >= 0.7:
-                    best = max(best, ratio * 3.0)
-    return best
 
 
 def main():
@@ -316,13 +282,24 @@ def main():
     os.makedirs(TREE_DIR, exist_ok=True)
     os.makedirs(SHARE_DIR, exist_ok=True)
     data, failed = {}, 0
+    def _items_hash(items_here):
+        """这个分享下的条目名指纹：表没变就不用重新列目录（Action 提速的关键）"""
+        import hashlib as _h
+        names = sorted((it.get("name") or "") for it in items_here)
+        return _h.md5("|".join(names).encode("utf-8")).hexdigest()
+
+    skipped = 0
     for pwd, items in groups.items():
-        if not args.all and all("#/list/share/" in (it.get("share_url") or "") for it in items):
-            man_path = os.path.join(SHARE_DIR, pwd + ".json")
-            if os.path.exists(man_path):
+        man_path = os.path.join(SHARE_DIR, pwd + ".json")
+        if not args.all and os.path.exists(man_path):
+            try:
                 man = json.load(open(man_path, encoding="utf-8"))
-                data[pwd] = man
-                continue
+                if (man.get("files") and man.get("items_hash") == _items_hash(items)):
+                    data[pwd] = man
+                    skipped += 1
+                    continue
+            except Exception:  # noqa: BLE001
+                pass
         try:
             tk = (_json(TOKEN_API, {"pwd_id": pwd, "passcode": ""}) or {}).get("data") or {}
             stoken = tk.get("stoken") or ""
@@ -337,10 +314,10 @@ def main():
             dirs_all.setdefault("0", {"n": "分享根目录", "p": ""})
             man = {"pwd": pwd, "stoken": stoken, "author": tk.get("author") or "",
                    "title": tk.get("title") or "", "synced_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                   "dirs": dirs_all, "files": files}
+                   "items_hash": _items_hash(items), "dirs": dirs_all, "files": files}
             with open(os.path.join(TREE_DIR, pwd + ".json"), "w", encoding="utf-8") as fh:
-                json.dump({"pwd": pwd, "synced_at": man["synced_at"], "dirs": dirs_all},
-                          fh, ensure_ascii=False)
+                json.dump({"pwd": pwd, "synced_at": man["synced_at"], "items_hash": man["items_hash"],
+                           "dirs": dirs_all}, fh, ensure_ascii=False)
             with open(os.path.join(SHARE_DIR, pwd + ".json"), "w", encoding="utf-8") as fh:
                 json.dump(man, fh, ensure_ascii=False)
             data[pwd] = man
@@ -348,6 +325,8 @@ def main():
             failed += len(items)
             print("  ! %s 列目录失败：%s（保留原链接）" % (pwd, exc))
         time.sleep(0.2)
+    if skipped:
+        print("  （%d 个合集的条目没变，直接用了上次的清单，没重新列目录）" % skipped)
 
     # 每个分享的二级目录（含上级是根的那些）
     level2 = {}
@@ -379,15 +358,15 @@ def main():
             vs, want = _variants(item, e), _season(item.get("name"))
             best, got = -1.0, None
             for fid, name in level2:
-                sc = _near(vs, want, name)
+                sc = _score(vs, name, want)
                 if sc > best:
                     best, got = sc, (fid, name)
-            if best < 0.6:
+            if best < 1.0:
                 for fid, name in deeper:
-                    sc = _near(vs, want, name)
+                    sc = _score(vs, name, want)
                     if sc > best:
                         best, got = sc, (fid, name)
-            if got is not None and best >= 0.6:
+            if got is not None and best >= 1.0:
                 fid, name = got
                 item["subfolder"] = name
                 if fid:

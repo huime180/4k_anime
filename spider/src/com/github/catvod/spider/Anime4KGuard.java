@@ -509,6 +509,19 @@ public class Anime4KGuard extends Spider {
         done.add(k);
     }
 
+    /**
+     * 转发取流：先清掉它内部缓存的「上次的线路/登录状态」（它有 setFlag 就是干这个的）。
+     *
+     * 不清的话：同一部番过一段时间再点，它会拿缓存里的旧状态去取，返回的直链已经失效
+     * （表现就是「获取到无效链接」）。
+     */
+    private String forward(Spider rq, String flag, String id, List<String> vipFlags) {
+        try {
+            rq.getClass().getMethod("setFlag", String.class).invoke(rq, "");
+        } catch (Throwable ignore) { }
+        return rq.playerContent(flag, id, vipFlags);
+    }
+
     private static String briefly(String s) {
         if (s == null) return "(null)";
         return s.length() > 300 ? s.substring(0, 300) + "…" : s;
@@ -663,7 +676,7 @@ public class Anime4KGuard extends Spider {
                 id = txJson(pwd, share, files.get(idx), flag);
                 Spider rq = real();
                 if (rq == null) return media("拿不到饭太硬的夸克实现：" + realReason);
-                String out = rq.playerContent(flag, id, vipFlags);
+                String out = forward(rq, flag, id, vipFlags);
                 if (out == null || out.length() < 20 || !out.contains("url")) {
                     return media("合集取流没返回地址。它返回：" + briefly(out)
                             + " ｜ 我们发的：" + briefly(id)
@@ -680,7 +693,7 @@ public class Anime4KGuard extends Spider {
         Spider rq = real();
         if (rq == null) return media("拿不到饭太硬的夸克实现：" + realReason);
         try {
-            return rq.playerContent(flag, id, vipFlags);   // 原样转发，含 夸父原/夸父智 的分档逻辑
+            return forward(rq, flag, id, vipFlags);        // 原样转发，含 夸父原/夸父智 的分档逻辑
         } catch (Throwable t) {
             return media("取流失败：" + t.getMessage());
         }
