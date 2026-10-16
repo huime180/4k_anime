@@ -558,16 +558,27 @@ public class Anime4KGuard extends Spider {
         put(sb, done, "parent", f.str("d"));
         put(sb, done, "vodName", f.str("d"));
         put(sb, done, "sub", share.str("title"));
-        put(sb, done, "flag", flag);
+        // 模板里没有这两个才用兜底值（模板通常有，且是它对的值）
+        if (ref == null || ref.str("flag").isEmpty()) put(sb, done, "flag", flag);
+        if (ref == null || ref.str("shareUser").isEmpty()) {
+            String u = share.str("author_name");
+            if (u.isEmpty()) {
+                String a = share.str("author");
+                u = a.startsWith("{") ? "" : a;
+            }
+            put(sb, done, "shareUser", u);
+        }
         return sb.append("}").toString();
     }
 
     private static boolean isOurs(String k) {
+        // 注意：flag / shareUser 不在这里 —— 它们要照它自己那份（模板）来，
+        // 我们猜的值（线路名/昵称）它可能不认，这是「多台设备都播不了」的嫌疑之一。
         return "fid".equals(k) || "share_fid_token".equals(k) || "file_name".equals(k)
                 || "size".equals(k) || "pdir_fid".equals(k) || "format_type".equals(k)
                 || "l_created_at".equals(k) || "sId".equals(k) || "sToken".equals(k)
-                || "shareUser".equals(k) || "pg".equals(k) || "parent".equals(k)
-                || "vodName".equals(k) || "sub".equals(k) || "flag".equals(k);
+                || "pg".equals(k) || "parent".equals(k)
+                || "vodName".equals(k) || "sub".equals(k);
     }
 
     private static void comma(StringBuilder sb) {
@@ -717,6 +728,7 @@ public class Anime4KGuard extends Spider {
             String other = theirsMeta.str("vod_content");
             if (!other.isEmpty()) sb.append(other).append("\n\n");
         }
+        if (!lastPlayNote.isEmpty()) sb.append(lastPlayNote).append("\n");
         if (!filterNote.isEmpty()) sb.append(filterNote).append("\n");
         sb.append("画质 ").append(item.str("resolution"))
           .append(" ｜ 修复 ").append(item.str("model"))
@@ -757,6 +769,7 @@ public class Anime4KGuard extends Spider {
                 if (rq == null) return media("拿不到饭太硬的夸克实现：" + realReason);
                 String out = forward(rq, flag, id, vipFlags);
                 if (out == null || out.length() < 20 || !out.contains("url")) {
+                    lastPlayNote = "上次取流失败：" + briefly(out) + " ｜ 发过去：" + briefly(id);
                     return media("合集取流没返回地址。它返回：" + briefly(out)
                             + " ｜ 我们发的：" + briefly(id)
                             + " ｜ 它自己的样例：" + briefly(refSample));
@@ -781,6 +794,8 @@ public class Anime4KGuard extends Spider {
     private String fail(String msg) {
         return "{\"list\":[],\"msg\":" + J.q(msg) + "}";
     }
+
+    static String lastPlayNote = "";     // 上一次取流失败的原因（写到下一次详情简介里）
 
     private String media(String msg) {
         return "{\"parse\":0,\"playUrl\":\"\",\"url\":\"\",\"msg\":" + J.q(msg) + "}";
