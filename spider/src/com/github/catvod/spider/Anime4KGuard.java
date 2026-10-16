@@ -334,97 +334,162 @@ public class Anime4KGuard extends Spider {
         return out;
     }
 
-    /** 某个合集的清单（构建时列的目录 + 正片，见 src/subfolder.py），10 分钟内存缓存 */
-    J share(String pwd) throws Exception {
-        long now = System.currentTimeMillis();
-        if (pwd.equals(sharePwd) && shareBody != null && now - shareAt < 600000) return J.parse(shareBody);
-        Exception last = null;
-        for (String url : dataUrls("share/" + pwd + ".json")) {
-            try {
-                String body = http("GET", url, null, null, null);
-                if (body != null && body.contains("\"files\"")) {
-                    sharePwd = pwd;
-                    shareBody = body;
-                    shareAt = now;
-                    return J.parse(body);
-                }
-                last = new Exception("不是清单: " + url);
-            } catch (Exception e) {
-                last = e;
-            }
-        }
-        throw last == null ? new Exception("拿不到清单") : last;
-    }
-
     /**
      * 合集条目：用本地清单直接出剧集（不调用它解析整季）
      *
      * 返回 {线路名, 播放列表}；不是合集 / 没有清单 / 清单里没这一部 -> null（回退老路）
      */
+    /**
+     * 合集条目：**自己从二级目录开始实时列目录**（不叫它解析整个大包，也不依赖预列清单）
+     *
+     * 目录是匿名的（令牌 + 列目录都不需要登录），所以我们只列「本条目那一层」：
+     *   * 那一层有正片 -> 直接出剧集（大多数番就是这一层，1 个请求）
+     *   * 那一层还是合集（里面套着分季/Part）-> 再列它的子目录（最多 30 个、深度 2），
+     *     把这些子目录里的正片一起列出来（同一系列放一起）
+     * 取流仍然交给它那套（见 playerContent 的 4k:own 分支），登录/转存/直链都是它的。
+     */
+    private static final java.util.HashMap<String, Object[]> epsCache =
+            new java.util.HashMap<String, Object[]>();     // 详情（剧集列表）缓存：pwd|fid -> [时间, 结果]
+
     String[] ownDetail(J item) {
         try {
             if (!ownPlay) return null;
             String pwd = item.str("pwd_id");
             long count = 1;
             try { count = Long.parseLong(item.str("share_count")); } catch (Throwable ignore) { }
-            if (pwd.isEmpty() || count <= 1) return null;         // 不是合集
-            String folder = item.str("subfolder");
+            if (pwd.isEmpty() || count <= 1) return null;              // 不是合集
             String fid = item.str("subfolder_fid");
-            if (fid.isEmpty() && folder.isEmpty()) return null;   // 没认出目录，回退老路
-            J share = share(pwd);
-            J dirs = share.node("dirs");
-            if (dirs == null) return null;
+            String folder = item.str("subfolder");
+            long now = System.currentTimeMillis();
+            Object[] cached = epsCache.get(pwd + "|" + fid);
+            if (cached != null && now - (Long) cached[0] < 600000) {
+                return (String[]) cached[1];            // 10 分钟内再打开：秒开，不再列目录
+            }
+            String stoken = stokenOf(pwd);
+            if (stoken.isEmpty()) return null;
 
-            // 这个目录 + 它下面所有层（同一系列的分季/Part 一起列，不再分级）
-            java.util.Set<String> want = new java.util.HashSet<String>();
-            if (!fid.isEmpty()) {
-                java.util.List<String> stack = new ArrayList<String>();
-                stack.add(fid);
-                while (!stack.isEmpty()) {
-                    String cur = stack.remove(0);
-                    J node = dirs.node(cur);
-                    if (node != null) want.add(norm(node.str("n")));
-                    for (String k : dirs.keys()) {
-                        J c = dirs.node(k);
-                        if (c != null && cur.equals(c.str("p"))) stack.add(k);
+            // 没有 fid（老数据）时：先列分享根，按名字找到那一层
+            if (fid.isEmpty() && !folder.isEmpty()) {
+                String want = norm(folder);
+                for (J f : listFolder(pwd, stoken, "0")) {
+                    if (f.str("dir").equals("true") && norm(f.str("file_name")).equals(want)) {
+                        fid = f.str("fid");
+                        break;
                     }
                 }
             }
-            if (want.isEmpty() && !folder.isEmpty()) want.add(norm(folder));
+            if (fid.isEmpty()) return null;
 
+            List<String> eps = new ArrayList<String>();
             String base = norm(folder);
-            List<J> files = share.arr("files");
+            collectEpisodes(pwd, stoken, fid, folder, base, 0, 0, eps);
+            if (eps.isEmpty()) return null;
+
             StringBuilder url = new StringBuilder();
-            int n = 0;
-            for (int i = 0; i < files.size(); i++) {
-                J f = files.get(i);
-                String where = norm(f.str("d"));
-                if (!want.contains(where)) continue;
-                String label = f.str("n");
-                String low = label.toLowerCase();
-                if (low.endsWith(".zip") || low.endsWith(".rar") || low.endsWith(".7z")
-                        || low.endsWith(".tar") || low.endsWith(".gz")) {
-                    label = label + "（压缩包，需下载解压）";    // 这种点了播不了，直接写清楚
-                }
-                if (!where.equals(base)) label = f.str("d") + " " + label;   // 分季目录的加个前缀
-                if (n++ > 0) url.append("#");
-                url.append(label).append("$4k:tx:").append(pwd).append(":").append(i);
+            for (int k = 0; k < eps.size(); k++) {
+                if (k > 0) url.append("#");
+                url.append(eps.get(k));
             }
-            if (n == 0) return null;
-            // 只有足够大的合集才绕开它的整季解析（小合集它自己解析是好的，就别动）
-            if (files.size() < 400 && !ownPlayAlways) return null;
-            filterNote = "本地清单：《" + item.str("name") + "》共 " + n + " 集（不调用整季解析）";
+            filterNote = "实时列目录：《" + item.str("name") + "》共 " + eps.size() + " 集";
             String list = url.toString();
-            return new String[]{"夸父原$$$夸父智", list + "$$$" + list};
+            String[] got = new String[]{"夸父原$$$夸父智", list + "$$$" + list};
+            epsCache.put(pwd + "|" + fid, new Object[]{now, got});
+            return got;
         } catch (Throwable t) {
-            return null;
+            return null;                     // 出问题就回退「它自己解析 + 按目录筛」
         }
     }
 
-    /** 把一条文件拼成它自己的 tX JSON（Gson 的字段名，它拿去转存 + 取直链） */
+    /** 递归收集某个目录（含其子目录）里的正片，拼成 `名字$4k:own:<pwd>:<上级目录 fid>:<文件 fid>` */
+    private void collectEpisodes(String pwd, String stoken, String fid, String dirName, String base,
+                                 int depth, int idx, List<String> out) {
+        if (depth > 2 || out.size() > 500) return;
+        List<J> rows;
+        try {
+            rows = listFolder(pwd, stoken, fid);
+        } catch (Throwable t) {
+            return;
+        }
+        List<String> subDirs = new ArrayList<String>();
+        for (J f : rows) {
+            String name = f.str("file_name");
+            if (f.str("dir").equals("true")) {
+                if (subDirs.size() < 30) subDirs.add(f.str("fid") + "\u0001" + name);
+                continue;
+            }
+            String low = name.toLowerCase();
+            if (!(low.endsWith(".mp4") || low.endsWith(".mkv") || low.endsWith(".ts")
+                    || low.endsWith(".m2ts") || low.endsWith(".avi") || low.endsWith(".mov")
+                    || low.endsWith(".webm") || low.endsWith(".rmvb") || low.endsWith(".flv")
+                    || low.endsWith(".wmv") || low.endsWith(".zip") || low.endsWith(".rar")
+                    || low.endsWith(".7z"))) {
+                continue;                     // 字幕之类不列
+            }
+            String label = name;
+            if (low.endsWith(".zip") || low.endsWith(".rar") || low.endsWith(".7z")) {
+                label = name + "（压缩包，需下载解压）";
+            }
+            if (!norm(dirName).equals(base)) label = dirName + " " + label;   // 分季的加前缀
+            out.add(label + "$4k:own:" + pwd + ":" + fid + ":" + f.str("fid"));
+        }
+        for (String sub : subDirs) {
+            String[] parts = sub.split("\u0001", 2);
+            collectEpisodes(pwd, stoken, parts[0], parts.length > 1 ? parts[1] : "", base,
+                    depth + 1, idx, out);
+        }
+    }
+
+    /** 列一个目录（翻页，最多 3 页）；匿名，只要令牌和 pwd */
+    List<J> listFolder(String pwd, String stoken, String fid) throws Exception {
+        List<J> out = new ArrayList<J>();
+        for (int page = 1; page <= 3; page++) {
+            String url = "https://drive-h.quark.cn/1/clouddrive/share/sharepage/detail"
+                    + "?pr=ucpro&fr=pc&pwd_id=" + enc(pwd) + "&stoken=" + enc(stoken)
+                    + "&pdir_fid=" + enc(fid) + "&force=0&_page=" + page
+                    + "&_size=200&__dt=1&__t=" + System.currentTimeMillis();
+            J data = J.parse(http("GET", url, null, null, "https://pan.quark.cn/")).node("data");
+            if (data == null) break;
+            List<J> rows = data.arr("list");
+            out.addAll(rows);
+            if (rows.size() < 200) break;
+        }
+        return out;
+    }
+
+    /** 分享令牌（匿名申请；内存缓存 10 分钟，一个包只申请一次） */
+    private static String stPwd = null;
+    private static String stValue = null;
+    private static long stAt = 0;
+
+    String stokenOf(String pwd) {
+        long now = System.currentTimeMillis();
+        if (pwd.equals(stPwd) && stValue != null && now - stAt < 600000) return stValue;
+        String got = newToken(pwd);
+        if (!got.isEmpty()) {
+            stPwd = pwd;
+            stValue = got;
+            stAt = now;
+        }
+        return got;
+    }
+
+    /** 申请一只新的分享令牌（只在旧 stoken 列不动时才用） */
+    private String newToken(String pwd) {
+        try {
+            String body = "{\"pwd_id\":" + J.q(pwd) + ",\"passcode\":\"\"}";
+            String tkJson = http("POST", "https://drive-h.quark.cn/1/clouddrive/share/sharepage/token",
+                    body, null, "https://pan.quark.cn/");
+            J data = J.parse(tkJson).node("data");
+            return data == null ? "" : data.str("stoken");
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
     /**
-     * 参考模板：让**它自己**去解析一个小合集（小合集不会 OOM），从它的播放 id 里
-     * 拆出真实的 tX 结构当模板 —— 我们的字段照它填，不靠猜。只跑一次，之后缓存。
+     * 参考模板：让**它自己**去解析一个**单部分享**（最小、不会 OOM），
+     * 从它的播放 id 里拆出真实 tX 结构当模板 —— 我们猜不准的字段（flag / shareUser…）
+     * 就照它对的值来。只跑一次，之后缓存。
      */
     J reference() {
         if (refTx != null) return refTx;
@@ -434,10 +499,7 @@ public class Anime4KGuard extends Spider {
             for (J it : data().arr("items")) {
                 long count = 1;
                 try { count = Long.parseLong(it.str("share_count")); } catch (Throwable ignore) { }
-                if (count <= 1 || it.str("pwd_id").isEmpty()) continue;
-                try {
-                    if (share(it.str("pwd_id")).arr("files").size() > 300) continue;   // 只要小合集
-                } catch (Throwable ignore) { continue; }
+                if (count != 1 || it.str("pwd_id").isEmpty()) continue;   // 单部分享最小
                 String[] t = realDetail2("https://pan.quark.cn/s/" + it.str("pwd_id"), it.str("name"));
                 if (t == null) continue;
                 String json = null;
@@ -457,73 +519,8 @@ public class Anime4KGuard extends Spider {
         return null;
     }
 
-    /**
-     * 现取一份「当前的」分享令牌 + 该文件的 share_fid_token
-     *
-     * 实测：同一批文件，每次申请 stoken 拿到的 `share_fid_token` 都不一样，
-     * 清单里存的是建站那次会话的 —— 过一段时间就失效（表现：合集剧集过段时间播不了，
-     * 而单独条目正常，因为它是当场解析、当场拿新令牌）。
-     * 这里按「分享 + 所在目录」缓存 10 分钟，一个目录里所有剧集共用一个缓存。
-     */
-    String[] freshTokens(String pwd, String pdirFid, String fid) {
-        String key = pwd + "|" + pdirFid;
-        long now = System.currentTimeMillis();
-        Object[] hit = tkCache.get(key);
-        if (hit != null && now - (Long) hit[0] < 600000) {
-            @SuppressWarnings("unchecked")
-            java.util.HashMap<String, String> m = (java.util.HashMap<String, String>) hit[1];
-            String tk = m.get(fid);
-            if (tk != null && !tk.isEmpty()) return new String[]{(String) hit[2], tk};
-        }
-        // 用**清单里那只 stoken** 列一下这个目录，只取这只文件的新 token 就行
-        // （实测 stoken 可复用：几天前那只照样能列目录；而文件 token 必须和
-        //  「列目录时用的那只 stoken」成对使用 —— 所以返回的就是这一对）。
-        // 列不动（分享被改/删、stoken 失效）才去申请新 stoken 重来一次。
-        String stored = "";
-        try { stored = share(pwd).str("stoken"); } catch (Throwable ignore) { }
-        for (int round = 0; round < 2; round++) {
-            String stoken = round == 0 ? stored : newToken(pwd);
-            if (stoken == null || stoken.isEmpty()) continue;
-            try {
-                // 只列**这个文件所在的那一层目录**（不递归、不碰整包）：
-                // 一页 200 条够绝大多数；目录里超过 200 个文件时再翻页找。
-                java.util.HashMap<String, String> map = new java.util.HashMap<String, String>();
-                for (int page = 1; page <= 3; page++) {
-                    String url = "https://drive-h.quark.cn/1/clouddrive/share/sharepage/detail"
-                            + "?pr=ucpro&fr=pc&pwd_id=" + enc(pwd) + "&stoken=" + enc(stoken)
-                            + "&pdir_fid=" + enc(pdirFid) + "&force=0&_page=" + page
-                            + "&_size=200&__dt=1&__t=" + now;
-                    String listJson = http("GET", url, null, null, "https://pan.quark.cn/");
-                    J list = J.parse(listJson).node("data");
-                    if (list == null) break;
-                    List<J> rows = list.arr("list");
-                    for (J f : rows) map.put(f.str("fid"), f.str("share_fid_token"));
-                    if (map.containsKey(fid) || rows.size() < 200) break;
-                }
-                String tk = map.get(fid);
-                if (tk == null || tk.isEmpty()) continue;
-                tkCache.put(key, new Object[]{now, map, stoken});
-                return new String[]{stoken, tk};
-            } catch (Throwable ignore) { }
-        }
-        return null;                           // 都拿不到就退回清单里那份
-    }
-
-    /** 申请一只新的分享令牌（只在旧 stoken 列不动时才用） */
-    private String newToken(String pwd) {
-        try {
-            String body = "{\"pwd_id\":" + J.q(pwd) + ",\"passcode\":\"\"}";
-            String tkJson = http("POST", "https://drive-h.quark.cn/1/clouddrive/share/sharepage/token",
-                    body, null, "https://pan.quark.cn/");
-            J data = J.parse(tkJson).node("data");
-            return data == null ? "" : data.str("stoken");
-        } catch (Throwable t) {
-            return "";
-        }
-    }
-
     /** 把一条文件拼成它自己的 tX JSON：以参考模板为底，覆盖成本条 + 本分享的值 */
-    String txJson(String pwd, J share, J f, String flag) {
+    String txJson(String pwd, String stoken, J f, String flag) {
         J ref = reference();
         StringBuilder sb = new StringBuilder("{");
         List<String> done = new ArrayList<String>();
@@ -534,17 +531,9 @@ public class Anime4KGuard extends Spider {
                 sb.append(J.q(k)).append(":").append(J.q(ref.str(k)));
                 done.add(k);
             }
-            if (!ref.str("flag").isEmpty()) flag = ref.str("flag");
-        }
-        // 令牌现取（清单里那份是建站那次会话的，过一段会失效）
-        String stoken = share.str("stoken"), fileToken = f.str("tk");
-        String[] fresh = freshTokens(pwd, f.str("p"), f.str("fid"));
-        if (fresh != null) {
-            stoken = fresh[0];
-            fileToken = fresh[1];
         }
         put(sb, done, "fid", f.str("fid"));
-        put(sb, done, "share_fid_token", fileToken);
+        put(sb, done, "share_fid_token", f.str("tk"));
         put(sb, done, "file_name", f.str("n"));
         putNum(sb, done, "size", f.str("s"));
         put(sb, done, "pdir_fid", f.str("p"));
@@ -552,28 +541,24 @@ public class Anime4KGuard extends Spider {
         putNum(sb, done, "l_created_at", f.str("c"));
         put(sb, done, "sId", pwd);
         put(sb, done, "sToken", stoken);
-        // 分享者昵称；老清单没有 author_name 时，author 是对象 -> 宁可空着也别塞 dict 文本
-        String user = share.str("author_name");
-        if (user.isEmpty()) {
-            String a = share.str("author");
-            user = a.startsWith("{") ? "" : a;
-        }
-        put(sb, done, "shareUser", user);
         put(sb, done, "pg", ref != null && !ref.str("pg").isEmpty() ? ref.str("pg") : "1");
         put(sb, done, "parent", f.str("d"));
         put(sb, done, "vodName", f.str("d"));
-        put(sb, done, "sub", share.str("title"));
-        // 模板里没有这两个才用兜底值（模板通常有，且是它对的值）
+        put(sb, done, "sub", f.str("d"));
         if (ref == null || ref.str("flag").isEmpty()) put(sb, done, "flag", flag);
-        if (ref == null || ref.str("shareUser").isEmpty()) {
-            String u = share.str("author_name");
-            if (u.isEmpty()) {
-                String a = share.str("author");
-                u = a.startsWith("{") ? "" : a;
-            }
-            put(sb, done, "shareUser", u);
-        }
         return sb.append("}").toString();
+    }
+
+    /** 把夸克列目录的一行，转成清单里那种短字段（fid/n/s/tk/p/t/c/d） */
+    private J asFile(J raw, String dirName) {
+        return J.parse("{\"fid\":" + J.q(raw.str("fid"))
+                + ",\"n\":" + J.q(raw.str("file_name"))
+                + ",\"s\":" + (raw.str("size").isEmpty() ? "0" : raw.str("size"))
+                + ",\"tk\":" + J.q(raw.str("share_fid_token"))
+                + ",\"p\":" + J.q(raw.str("pdir_fid"))
+                + ",\"t\":" + J.q(raw.str("format_type"))
+                + ",\"c\":" + (raw.str("created_at").isEmpty() ? "0" : raw.str("created_at"))
+                + ",\"d\":" + J.q(dirName) + "}");
     }
 
     private static boolean isOurs(String k) {
@@ -758,30 +743,33 @@ public class Anime4KGuard extends Spider {
 
     @Override
     public String playerContent(String flag, String id, List<String> vipFlags) {
-        if (id != null && id.startsWith("4k:tx:")) {
+        if (id != null && id.startsWith("4k:own:")) {
             try {
-                String spec = id.substring("4k:tx:".length());
-                int cut = spec.lastIndexOf(':');
-                String pwd = spec.substring(0, cut);
-                int idx = Integer.parseInt(spec.substring(cut + 1));
-                J share = share(pwd);
-                List<J> files = share.arr("files");
-                if (idx < 0 || idx >= files.size()) return media("清单里没有这一集（分享变了？）");
-                // 把这一条文件的 fid/名字/大小/share_fid_token/上级目录 + 分享信息
-                // 拼成它自己的 tX JSON；然后把 id 换成它，继续走下面的转发（转存 + 取直链还是它那套）
-                id = txJson(pwd, share, files.get(idx), flag);
+                String spec = id.substring("4k:own:".length());
+                int c1 = spec.indexOf(':'), c2 = spec.lastIndexOf(':');
+                String pwd = spec.substring(0, c1);
+                String pdirFid = spec.substring(c1 + 1, c2);
+                String fid = spec.substring(c2 + 1);
+                String stoken = stokenOf(pwd);
+                if (stoken.isEmpty()) return media("拿不到分享令牌（分享可能被删/改了）");
+                // 列一次这个文件所在的目录：既确认文件还在，也顺便拿到**当前的** share_fid_token
+                J file = null;
+                for (J f : listFolder(pwd, stoken, pdirFid)) {
+                    if (f.str("fid").equals(fid)) { file = f; break; }
+                }
+                if (file == null) return media("分享里找不到这个文件（分享被改了？）");
+                String tx = txJson(pwd, stoken, asFile(file, ""), flag);
                 Spider rq = real();
                 if (rq == null) return media("拿不到饭太硬的夸克实现：" + realReason);
-                String out = forward(rq, flag, id, vipFlags);
+                String out = rq.playerContent(flag, tx, vipFlags);   // 它去转存 + 取直链
                 if (out == null || out.length() < 20 || !out.contains("url")) {
-                    lastPlayNote = "上次取流失败：" + briefly(out) + " ｜ 发过去：" + briefly(id);
-                    return media("合集取流没返回地址。它返回：" + briefly(out)
-                            + " ｜ 我们发的：" + briefly(id)
-                            + " ｜ 它自己的样例：" + briefly(refSample));
+                    lastPlayNote = "上次取流失败：" + briefly(out) + " ｜ 我们发过去的： " + briefly(tx);
+                    return media("取流没返回地址。它返回：" + briefly(out)
+                            + " ｜ 我们发过去的：" + briefly(tx) + " ｜ 它的模板：" + briefly(refSample));
                 }
                 return out;
             } catch (Throwable t) {
-                return media("合集取流失败：" + t);
+                return media("取流失败：" + t);
             }
         }
         if (id != null && id.startsWith("4k:diag")) {

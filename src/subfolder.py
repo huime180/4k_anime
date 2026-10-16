@@ -37,13 +37,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(ROOT, "data")
 PUBLIC_DIR = os.path.join(ROOT, "public")
 TREE_DIR = os.path.join(PUBLIC_DIR, "tree")     # 目录树（静态数据）
-SHARE_DIR = os.path.join(PUBLIC_DIR, "share")   # **超大包**才写的「正片清单」
-
-# 说明：剧集默认**实时解析**（见 spider 的 subfolder 筛选）。
-# 但超大包（正片 ≥ MANY_FILES）它自己解析会 OutOfMemoryError（实测堆 256MB、单次申请 88MB+），
-# 所以只给这些包预列一份清单，spider 用它出剧集（取流仍用**点播时现取的新令牌**）。
-# public/tree/<pwd>.json 是列目录的缓存（目录名 + file_num + synced_at）。
-MANY_FILES = 400
+# 说明：剧集**不再预列任何清单** —— spider 会自己从「二级目录」开始实时列目录
+# （匿名：令牌 + 列目录都不需要登录），只列你点开的那一层，不碰整包、不会 OOM。
+# 这里只做两件事：
+#   1) 匿名列一次目录名，把每个条目对到它自己包里的**二级目录**（写进 anime.json）
+#   2) 结果缓存到 public/tree/<pwd>.json（目录名 + file_num + synced_at，7 天）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from names import normalize_name  # noqa: E402
@@ -331,7 +329,7 @@ def main():
         try:
             tk = (_json(TOKEN_API, {"pwd_id": pwd, "passcode": ""}) or {}).get("data") or {}
             stoken = tk.get("stoken") or ""
-            dirs_all, files = collect_share(pwd, stoken)
+            dirs_all, _files = collect_share(pwd, stoken)
             tops = [f for f, v in dirs_all.items() if v.get("p") == "0" and f != "0"]
             if len(tops) == 1:                       # 拍平「季度合集」那层
                 wrapper = tops[0]
@@ -345,17 +343,6 @@ def main():
                    "file_num": tk.get("file_num"), "dirs": dirs_all}
             with open(os.path.join(TREE_DIR, pwd + ".json"), "w", encoding="utf-8") as fh:
                 json.dump(man, fh, ensure_ascii=False)
-            if len(files) >= MANY_FILES:              # 超大包才预列正片清单
-                os.makedirs(SHARE_DIR, exist_ok=True)
-                author = tk.get("author")
-                man_big = dict(man)
-                man_big["author_name"] = (author.get("nick_name") if isinstance(author, dict)
-                                          else (author or "")) or ""
-                man_big["files"] = files
-                with open(os.path.join(SHARE_DIR, pwd + ".json"), "w", encoding="utf-8") as fh:
-                    json.dump(man_big, fh, ensure_ascii=False)
-                print("      · 超大包：%d 个正片 -> public/share/%s.json（实时解析会 OOM）"
-                      % (len(files), pwd))
             data[pwd] = man
         except Exception as exc:  # noqa: BLE001
             failed += len(items)
