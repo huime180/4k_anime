@@ -69,6 +69,23 @@ public class CheckOwnPlay {
                 parsed.str("sId").equals(pwd) && !parsed.str("sToken").isEmpty(),
                 parsed.str("sToken").substring(0, Math.min(8, parsed.str("sToken").length())) + "…");
 
+        // 现取令牌：清单里那份是建站那次会话的（实测每次都变），点播时要现取
+        Anime4KGuard.J f0 = files.get(0);
+        String[] fresh = s.freshTokens(pwd, f0.str("p"), f0.str("fid"));
+        if (fresh == null) {
+            System.out.println("⚠️  现取令牌没成功（网络/接口问题），会退回清单里那份");
+        } else {
+            check("现取到新 stoken", !fresh[0].isEmpty(), fresh[0].substring(0, Math.min(10, fresh[0].length())) + "…");
+            check("现取到该文件的新 share_fid_token", !fresh[1].isEmpty(),
+                    fresh[1].substring(0, Math.min(12, fresh[1].length())) + "…");
+            check("和清单里那份确实不同（说明旧令牌会过期）", !fresh[1].equals(f0.str("tk")),
+                    "清单 " + f0.str("tk").substring(0, Math.min(10, f0.str("tk").length())) + "… / 现取 "
+                            + fresh[1].substring(0, Math.min(10, fresh[1].length())) + "…");
+            String tx2 = s.txJson(pwd, share, f0, "夸父原");
+            check("拼出来的 tX 用的是新令牌", tx2.contains(fresh[1]) && tx2.contains(fresh[0]),
+                    "ok");
+        }
+
         // 取流：桌面没有它的实现，只确认走到那一步（不是抛异常）
         String pc = s.playerContent("夸父原", "4k:tx:" + pwd + ":0", null);
         check("取流走到了它自己的实现（桌面预期拿不到）",

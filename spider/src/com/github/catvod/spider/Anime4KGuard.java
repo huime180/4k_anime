@@ -52,6 +52,7 @@ public class Anime4KGuard extends Spider {
     private boolean subfolderOnly = true;  // 合集分享只留本条目对应的那个目录（ext.subfolder=false 可关）
     private boolean ownPlay = true;        // 合集条目用「本地清单 + 饭太硬取流」（它自己解析整季会 OOM）
     private boolean ownPlayAlways = false; // ext.ownPlayAlways=true：所有合集都走本地清单
+    private static final java.util.HashMap<String, Object[]> tkCache = new java.util.HashMap<String, Object[]>();
     private static J refTx = null;         // 参考模板：它自己解析小合集拿到的真实 id 结构
     private static boolean refTried = false;
     private static String refSample = "";
@@ -456,6 +457,48 @@ public class Anime4KGuard extends Spider {
         return null;
     }
 
+    /**
+     * 现取一份「当前的」分享令牌 + 该文件的 share_fid_token
+     *
+     * 实测：同一批文件，每次申请 stoken 拿到的 `share_fid_token` 都不一样，
+     * 清单里存的是建站那次会话的 —— 过一段时间就失效（表现：合集剧集过段时间播不了，
+     * 而单独条目正常，因为它是当场解析、当场拿新令牌）。
+     * 这里按「分享 + 所在目录」缓存 10 分钟，一个目录里所有剧集共用一个缓存。
+     */
+    String[] freshTokens(String pwd, String pdirFid, String fid) {
+        String key = pwd + "|" + pdirFid;
+        long now = System.currentTimeMillis();
+        Object[] hit = tkCache.get(key);
+        if (hit != null && now - (Long) hit[0] < 600000) {
+            @SuppressWarnings("unchecked")
+            java.util.HashMap<String, String> m = (java.util.HashMap<String, String>) hit[1];
+            String tk = m.get(fid);
+            if (tk != null && !tk.isEmpty()) return new String[]{(String) hit[2], tk};
+        }
+        try {
+            String body = "{\"pwd_id\":" + J.q(pwd) + ",\"passcode\":\"\"}";
+            String tkJson = http("POST", "https://drive-h.quark.cn/1/clouddrive/share/sharepage/token",
+                    body, null, "https://pan.quark.cn/");
+            String stoken = J.parse(tkJson).node("data") == null ? "" : J.parse(tkJson).node("data").str("stoken");
+            if (stoken.isEmpty()) return null;
+            String url = "https://drive-h.quark.cn/1/clouddrive/share/sharepage/detail"
+                    + "?pr=ucpro&fr=pc&pwd_id=" + enc(pwd) + "&stoken=" + enc(stoken)
+                    + "&pdir_fid=" + enc(pdirFid) + "&force=0&_page=1&_size=200&__dt=1&__t=" + now;
+            String listJson = http("GET", url, null, null, "https://pan.quark.cn/");
+            J list = J.parse(listJson).node("data");
+            if (list == null) return null;
+            java.util.HashMap<String, String> map = new java.util.HashMap<String, String>();
+            for (J f : list.arr("list")) {
+                map.put(f.str("fid"), f.str("share_fid_token"));
+            }
+            tkCache.put(key, new Object[]{now, map, stoken});
+            String tk = map.get(fid);
+            return tk == null ? null : new String[]{stoken, tk};
+        } catch (Throwable t) {
+            return null;                       // 拿不到就退回清单里那份
+        }
+    }
+
     /** 把一条文件拼成它自己的 tX JSON：以参考模板为底，覆盖成本条 + 本分享的值 */
     String txJson(String pwd, J share, J f, String flag) {
         J ref = reference();
@@ -470,15 +513,22 @@ public class Anime4KGuard extends Spider {
             }
             if (!ref.str("flag").isEmpty()) flag = ref.str("flag");
         }
+        // 令牌现取（清单里那份是建站那次会话的，过一段会失效）
+        String stoken = share.str("stoken"), fileToken = f.str("tk");
+        String[] fresh = freshTokens(pwd, f.str("p"), f.str("fid"));
+        if (fresh != null) {
+            stoken = fresh[0];
+            fileToken = fresh[1];
+        }
         put(sb, done, "fid", f.str("fid"));
-        put(sb, done, "share_fid_token", f.str("tk"));
+        put(sb, done, "share_fid_token", fileToken);
         put(sb, done, "file_name", f.str("n"));
         putNum(sb, done, "size", f.str("s"));
         put(sb, done, "pdir_fid", f.str("p"));
         put(sb, done, "format_type", f.str("t"));
         putNum(sb, done, "l_created_at", f.str("c"));
         put(sb, done, "sId", pwd);
-        put(sb, done, "sToken", share.str("stoken"));
+        put(sb, done, "sToken", stoken);
         // 分享者昵称；老清单没有 author_name 时，author 是对象 -> 宁可空着也别塞 dict 文本
         String user = share.str("author_name");
         if (user.isEmpty()) {
