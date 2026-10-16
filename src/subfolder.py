@@ -293,19 +293,31 @@ def main():
     os.makedirs(TREE_DIR, exist_ok=True)
     os.makedirs(SHARE_DIR, exist_ok=True)
     data, failed = {}, 0
-    def _items_hash(items_here):
-        """这个分享下的条目名指纹：表没变就不用重新列目录（Action 提速的关键）"""
-        import hashlib as _h
-        names = sorted((it.get("name") or "") for it in items_here)
-        return _h.md5("|".join(names).encode("utf-8")).hexdigest()
-
     skipped = 0
     for pwd, items in groups.items():
         man_path = os.path.join(SHARE_DIR, pwd + ".json")
+        # 缓存键用**分享自己的 file_num**（一次令牌请求就拿到，很快）：
+        # 不用「条目名指纹」—— 条目会被我们改指到别的包，指纹一变就永远缓存不中。
+        # 分享里加了新剧集 -> file_num 变 -> 重新列目录；没变就直接用上次的清单。
+        try:
+            tk0 = (_json(TOKEN_API, {"pwd_id": pwd, "passcode": ""}) or {}).get("data") or {}
+        except Exception as exc:  # noqa: BLE001
+            failed += len(items)
+            print("  ! %s 令牌失败：%s（保留原值）" % (pwd, exc))
+            continue
         if not args.all and os.path.exists(man_path):
             try:
                 man = json.load(open(man_path, encoding="utf-8"))
-                if (man.get("files") and man.get("items_hash") == _items_hash(items)):
+                # 用清单里记的 synced_at 算新鲜度（CI 是全新 checkout，文件 mtime 都当"刚改"，
+                # 用它判断的话清单永远不刷新）
+                try:
+                    age = time.time() - time.mktime(time.strptime(man.get("synced_at", ""),
+                                                                  "%Y-%m-%d %H:%M:%S"))
+                except Exception:  # noqa: BLE001
+                    age = 9e9
+                fresh = age < 7 * 86400
+                if (man.get("files") and fresh
+                        and int(man.get("file_num") or -1) == int(tk0.get("file_num") or -2)):
                     data[pwd] = man
                     skipped += 1
                     continue
@@ -325,9 +337,9 @@ def main():
             dirs_all.setdefault("0", {"n": "分享根目录", "p": ""})
             man = {"pwd": pwd, "stoken": stoken, "author": tk.get("author") or "",
                    "title": tk.get("title") or "", "synced_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                   "items_hash": _items_hash(items), "dirs": dirs_all, "files": files}
+                   "file_num": tk.get("file_num"), "dirs": dirs_all, "files": files}
             with open(os.path.join(TREE_DIR, pwd + ".json"), "w", encoding="utf-8") as fh:
-                json.dump({"pwd": pwd, "synced_at": man["synced_at"], "items_hash": man["items_hash"],
+                json.dump({"pwd": pwd, "synced_at": man["synced_at"], "file_num": man["file_num"],
                            "dirs": dirs_all}, fh, ensure_ascii=False)
             with open(os.path.join(SHARE_DIR, pwd + ".json"), "w", encoding="utf-8") as fh:
                 json.dump(man, fh, ensure_ascii=False)
