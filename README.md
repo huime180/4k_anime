@@ -149,9 +149,9 @@ https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/co
 * 每次 Action：`src/fetch_upstream_jar.py` 跟随官方 jar（校验 md5、解包）→
   `build_spider.sh`（javac + d8 合并 + 确定性打包）→ 提交新 jar；拿不到就保留现有 jar。
 * `data/upstream.json` 记录上游 jar / guard 的 md5。
-* jar 会另存一份**文件名里带内容 md5** 的副本到 `jar/h/`，配置里引用的就是它 ——
-  这样即使 App 缓存里是旧配置，它指向的也是和自己声明的 md5 完全相同的文件，
-  不会出现「配置旧 / jar 新」→ 校验失败 → spider 不加载 → 所有线路没分类。
+* jar 会另存一份**文件名中带内容 md5** 的副本到 `jar/h/`，配置引用的即为该文件。
+  这样即使客户端持有的是缓存中的旧配置，其指向的文件与自身声明的 md5 也始终一致，
+  不会出现「配置与 jar 版本不匹配导致线路未加载」的情况。
 
 ---
 
@@ -224,7 +224,7 @@ Luckysheet 结构，横向分 3 个数据块，每块 4 列（资源名称 / 使
 考虑到 `bgm.tv` 在部分网络下直连不稳定，`src/export_data.py` 会将封面**镜像到本仓库**
 （`public/cover/bgm/<md5>.jpg`，采用 Bangumi 的 `common` 规格，约 12KB/张，合计约 8MB），
 `vod_pic` 指向经 **gh-proxy** 加速的地址（与配置、jar 使用同一加速通道）。
-单张下载未成功时保留原始地址，下次同步重试；未被引用的镜像会自动清理。
+单张下载未成功时保留原始地址，在后续同步中再次尝试；未被引用的镜像会自动清理。
 
 图片地址在 `src/enrich.py` 的 `_reachable()` 中统一归一化为主站域名 `https://bgm.tv/...`。
 
