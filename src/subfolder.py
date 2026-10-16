@@ -37,7 +37,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(ROOT, "data")
 PUBLIC_DIR = os.path.join(ROOT, "public")
 TREE_DIR = os.path.join(PUBLIC_DIR, "tree")     # 目录树（静态数据）
-SHARE_DIR = os.path.join(PUBLIC_DIR, "share")   # 每个合集的「目录 + 正片清单」（给播放用）
+# 说明：不再产出「正片清单」（剧集改成实时解析，见 spider 的 subfolder 筛选）。
+# public/tree/<pwd>.json 只作为**列目录的缓存**（记录 file_num / synced_at / 目录名）。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from names import normalize_name  # noqa: E402
@@ -289,13 +290,12 @@ def main():
     print("[subfolder] 合集分享 %d 个，共 %d 条条目"
           % (len(groups), sum(len(v) for v in groups.values())))
 
-    # ---------- 1) 先把每个合集的「目录 + 清单」收下来 ----------
+    # ---------- 1) 先把每个合集的**目录名**收下来（不再收剧集清单） ----------
     os.makedirs(TREE_DIR, exist_ok=True)
-    os.makedirs(SHARE_DIR, exist_ok=True)
     data, failed = {}, 0
     skipped = 0
     for pwd, items in groups.items():
-        man_path = os.path.join(SHARE_DIR, pwd + ".json")
+        man_path = os.path.join(TREE_DIR, pwd + ".json")
         # 缓存键用**分享自己的 file_num**（一次令牌请求就拿到，很快）：
         # 不用「条目名指纹」—— 条目会被我们改指到别的包，指纹一变就永远缓存不中。
         # 分享里加了新剧集 -> file_num 变 -> 重新列目录；没变就直接用上次的清单。
@@ -316,7 +316,7 @@ def main():
                 except Exception:  # noqa: BLE001
                     age = 9e9
                 fresh = age < 7 * 86400
-                if (man.get("files") and fresh
+                if (man.get("dirs") and fresh
                         and int(man.get("file_num") or -1) == int(tk0.get("file_num") or -2)):
                     data[pwd] = man
                     skipped += 1
@@ -326,7 +326,7 @@ def main():
         try:
             tk = (_json(TOKEN_API, {"pwd_id": pwd, "passcode": ""}) or {}).get("data") or {}
             stoken = tk.get("stoken") or ""
-            dirs_all, files = collect_share(pwd, stoken)
+            dirs_all, _files = collect_share(pwd, stoken)
             tops = [f for f, v in dirs_all.items() if v.get("p") == "0" and f != "0"]
             if len(tops) == 1:                       # 拍平「季度合集」那层
                 wrapper = tops[0]
@@ -335,16 +335,10 @@ def main():
                         info["p"] = "0"
                 dirs_all.pop(wrapper, None)
             dirs_all.setdefault("0", {"n": "分享根目录", "p": ""})
-            author = tk.get("author")
-            author_name = author.get("nick_name") if isinstance(author, dict) else (author or "")
-            man = {"pwd": pwd, "stoken": stoken, "author": author or "",
-                   "author_name": author_name or "",
-                   "title": tk.get("title") or "", "synced_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                   "file_num": tk.get("file_num"), "dirs": dirs_all, "files": files}
+            man = {"pwd": pwd, "stoken": stoken, "title": tk.get("title") or "",
+                   "synced_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                   "file_num": tk.get("file_num"), "dirs": dirs_all}
             with open(os.path.join(TREE_DIR, pwd + ".json"), "w", encoding="utf-8") as fh:
-                json.dump({"pwd": pwd, "synced_at": man["synced_at"], "file_num": man["file_num"],
-                           "dirs": dirs_all}, fh, ensure_ascii=False)
-            with open(os.path.join(SHARE_DIR, pwd + ".json"), "w", encoding="utf-8") as fh:
                 json.dump(man, fh, ensure_ascii=False)
             data[pwd] = man
         except Exception as exc:  # noqa: BLE001
