@@ -129,6 +129,8 @@ def _fill_items(anime, meta, pages):
     share_count = {}
     for item in anime.get("items", []):
         pwd = item.get("pwd_id") or ""
+        if not pwd or item.get("single_share"):
+            continue                    # 没有分享 ID（PikPak）/ 人工改指到单部分享的：不算合集
         share_count[pwd] = share_count.get(pwd, 0) + 1
     for item in anime.get("items", []):
         info = meta.get(normalize_name(item.get("name", ""))) or {}
@@ -146,7 +148,7 @@ def _fill_items(anime, meta, pages):
         item["vod_director"] = info.get("director") or ""
         item["vod_actor"] = info.get("actor") or ""
         item["vod_content"] = (info.get("summary") or "").strip()
-        item["share_count"] = share_count.get(item.get("pwd_id") or "", 1)
+        item["share_count"] = 1 if item.get("single_share") else share_count.get(item.get("pwd_id") or "", 1)
         # 别名（Bangumi 的 别名/原名/中文名）：目录常写成英文/日文原名，spider 筛目录时一起比
         item["vod_alias"] = info.get("aliases") or ""
         if item["vod_director"] or item["vod_actor"] or item["vod_area"]:

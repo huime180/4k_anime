@@ -275,6 +275,17 @@ def main():
         if pwd and counts[pwd] > 1:
             groups.setdefault(pwd, []).append(item)
 
+    # 人工核对过的映射（自动匹配认不出来的那些）：优先用，脚本不再猜
+    ov_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "subfolder_overrides.json")
+    overrides = {}
+    if os.path.exists(ov_path):
+        try:
+            with open(ov_path, encoding="utf-8") as fh:
+                overrides = {k: v for k, v in json.load(fh).items() if not k.startswith("_")}
+        except ValueError:
+            overrides = {}
+    print("[subfolder] 人工映射 %d 条" % len(overrides))
+
     print("[subfolder] 合集分享 %d 个，共 %d 条条目"
           % (len(groups), sum(len(v) for v in groups.values())))
 
@@ -354,6 +365,34 @@ def main():
         deeper = [(f, v["n"]) for f, v in man["dirs"].items()
                   if v.get("p") not in ("0", "") and f != "0"]
         for item in items:
+            manual = overrides.get(item.get("name") or "")
+            if manual:
+                if manual.get("share"):                 # 指到独立分享（它本身就只有一部）
+                    item["pwd_id"] = manual["share"]
+                    item["share_url"] = "https://pan.quark.cn/s/" + manual["share"]
+                    item["single_share"] = 1            # 告诉 spider/export：这不是合集
+                    item.pop("subfolder", None)
+                    item.pop("subfolder_fid", None)
+                    hit += 1
+                    continue
+                mpwd = manual.get("pwd") or pwd
+                mfolder = manual.get("folder") or ""
+                mman = data.get(mpwd) or man
+                mfid = ""
+                for f, v in (mman.get("dirs") or {}).items():
+                    if v.get("n") == mfolder:
+                        mfid = f
+                        break
+                item["pwd_id"] = mpwd
+                item["subfolder"] = mfolder
+                if mfid:
+                    item["subfolder_fid"] = mfid
+                item["share_url"] = SHARE_URL % (mpwd, mfid) if mfid else ("https://pan.quark.cn/s/" + mpwd)
+                if mpwd != pwd:
+                    item["subfolder_fix"] = pwd
+                hit += 1
+                continue
+
             e = meta.get(normalize_name(item.get("name") or "")) or {}
             vs, want = _variants(item, e), _season(item.get("name"))
             best, got = -1.0, None
