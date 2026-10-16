@@ -321,19 +321,6 @@ public class Anime4KGuard extends Spider {
         }
     }
 
-    /** 数据站里的其它静态文件地址（和 anime.json 同目录，换个文件名） */
-    java.util.List<String> dataUrls(String file) {
-        java.util.List<String> bases = new java.util.ArrayList<String>();
-        if (dataUrl != null && !dataUrl.isEmpty()) bases.add(dataUrl);
-        bases.addAll(extraUrls);
-        java.util.List<String> out = new java.util.ArrayList<String>();
-        for (String u : bases) {
-            String t = u.replace("anime.json", file);
-            if (!out.contains(t)) out.add(t);
-        }
-        return out;
-    }
-
     /**
      * 合集条目：用本地清单直接出剧集（不调用它解析整季）
      *
