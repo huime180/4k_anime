@@ -34,7 +34,7 @@ https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/co
 ```
 
 更换 jar 版本后导入时可加 `?t=<时间戳>` 穿透缓存。
-
+能用的壳子NewBox  https://pan.quark.cn/s/bd846d39e22d  
 | 项 | 说明 |
 | --- | --- |
 | 线路 | `key: 4k_anime`，`type: 3`，`api: csp_Anime4KGuard` |
