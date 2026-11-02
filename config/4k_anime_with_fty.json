@@ -1,10 +1,10 @@
 {
- "spider": "https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/jar/h/4k_anime_fty_merged.d8108bdf977cdc52d550234c9a900f47.jar;md5;d8108bdf977cdc52d550234c9a900f47",
+ "spider": "https://gh-proxy.com/https://raw.githubusercontent.com/huime180/4k_anime/main/jar/h/4k_anime_fty_merged.f91380fcecdf770d78cc941426bbb755.jar;md5;f91380fcecdf770d78cc941426bbb755",
  "wallpaper": "https://动态壁纸.饭.eu.org/",
  "sites": [
   {
    "key": "点我切源",
-   "name": "豆豆┃片单",
+   "name": "豆豆┃片单<修复所有>",
    "type": 3,
    "api": "csp_DouDouGuard",
    "indexs": 1,
@@ -282,17 +282,6 @@
    "changeable": 0
   },
   {
-   "key": "咕咕",
-   "name": "🦉咕咕┃动漫",
-   "type": 3,
-   "api": "csp_AppSxGuard",
-   "timeout": 10,
-   "searchable": 1,
-   "quickSearch": 1,
-   "changeable": 1,
-   "ext": "rfOX1voDIQhH8epBwpmIsuS/sSCZxc/l0mxkeoroQVYOelMAvX1kuYptSLB36YxEjVawS9p37Cgo"
-  },
-  {
    "key": "Dm84",
    "name": "🚌巴士┃动漫",
    "type": 3,
@@ -379,7 +368,7 @@
     "type": "rect",
     "ratio": 1
    },
-   "searchable": 0,
+   "searchable": 1,
    "quickSearch": 0,
    "changeable": 0
   },
@@ -400,8 +389,8 @@
    "key": "虎牙js",
    "name": "🐯虎牙┃直播",
    "type": 3,
-   "api": "https://git.yylx.win/https://raw.githubusercontent.com/fantaiying7/EXT/refs/heads/main/drpy2.min.js",
-   "ext": "https://git.yylx.win/https://raw.githubusercontent.com/fantaiying7/EXT/refs/heads/main/虎牙.js",
+   "api": "https://ghproxy.net/https://raw.githubusercontent.com/fantaiying7/EXT/refs/heads/main/drpy2.min.js",
+   "ext": "https://ghproxy.net/https://raw.githubusercontent.com/fantaiying7/EXT/refs/heads/main/虎牙.js",
    "style": {
     "type": "rect",
     "ratio": 1.755
@@ -416,8 +405,8 @@
    "key": "斗鱼js",
    "name": "🐟斗鱼┃直播",
    "type": 3,
-   "api": "https://git.yylx.win/https://raw.githubusercontent.com/fantaiying7/EXT/refs/heads/main/drpy2.min.js",
-   "ext": "https://git.yylx.win/https://raw.githubusercontent.com/fantaiying7/EXT/refs/heads/main/斗鱼直播.js",
+   "api": "https://ghproxy.net/https://raw.githubusercontent.com/fantaiying7/EXT/refs/heads/main/drpy2.min.js",
+   "ext": "https://ghproxy.net/https://raw.githubusercontent.com/fantaiying7/EXT/refs/heads/main/斗鱼直播.js",
    "style": {
     "type": "rect",
     "ratio": 1.755
@@ -544,8 +533,8 @@
    "key": "dr_兔小贝",
    "name": "📚儿童┃启蒙",
    "type": 3,
-   "api": "https://git.yylx.win/https://raw.githubusercontent.com/fantaiying7/EXT/refs/heads/main/drpy2.min.js",
-   "ext": "https://git.yylx.win/https://raw.githubusercontent.com/fantaiying7/EXT/refs/heads/main/%E5%85%94%E5%B0%8F%E8%B4%9D.js",
+   "api": "https://ghproxy.net/https://raw.githubusercontent.com/fantaiying7/EXT/refs/heads/main/drpy2.min.js",
+   "ext": "https://ghproxy.net/https://raw.githubusercontent.com/fantaiying7/EXT/refs/heads/main/%E5%85%94%E5%B0%8F%E8%B4%9D.js",
    "style": {
     "type": "rect",
     "ratio": 1.597
@@ -656,9 +645,9 @@
  ],
  "logo": "https://bdcache1-f1.v3mh.com/image/25-12-16/6941612717007.gif",
  "hosts": [
-  "img1.wsyzy.org=fan.cloudflare.182682.xyz",
-  "fiizvfck.top=fan.cloudflare.182682.xyz",
-  "images.67c6c7a.com=fan.cloudflare.182682.xyz"
+  "img1.wsyzy.org=cmcc.vvvv.ee",
+  "fiizvfck.top=cmcc.vvvv.ee",
+  "images.67c6c7a.com=cmcc.vvvv.ee"
  ],
  "lives": [
   {
@@ -706,5 +695,5 @@
  ],
  "_说明": "饭太硬官方配置（自动解析） + 4k_anime 线路（插在「我的云盘」之后）",
  "_4k动漫": "目录来自 https://huime180.github.io/4k_anime/anime.json（站点不含解析）；详情/播放经 Init.loader() 转发给 jar 里饭太硬原生的夸克解析（夸克登录见「我的云盘」）。本文件由 src/fetch_fty.py 自动生成。",
- "_generated_at": "2026-10-26 10:09:33 UTC"
+ "_generated_at": "2026-11-02 12:23:18 UTC"
 }
